@@ -11,7 +11,7 @@
 * Add `GRACE PERIOD` to `SHOW CREATE MATERIALIZED VIEW` output. ({issue}`27529`)
 * Allow field name declaration in row literals. For example, `row(1 as a, 2 as b)` is now legal. ({issue}`25261`)
 * Add `queryText` as a regular expression in resource group selector. ({issue}`27129`)
-* Require JDK 25 to build and run Trino. ({issue}`27153`)
+* {{breaking}} Require JDK 25 to build and run Trino. ({issue}`27171`)
 * {{breaking}} The configuration property `task.statistics-cpu-timer-enabled` is now defunct and must be removed. ({issue}`27504`)
 * Deprecate `EXPLAIN` type `LOGICAL` and `DISTRIBUTED`. Use `EXPLAIN` without a type clause, instead. ({issue}`27434`)
 * Remove `prefer_streaming_operators` session property. ({issue}`27506`)
@@ -52,6 +52,8 @@
 * Add `APPLICATION_DEFAULT` authentication type for GCS. ({issue}`26984`)
 * {{breaking}} Remove support for unauthenticated access when GCS authentication type is set to `SERVICE_ACCOUNT`. ({issue}`26984`)
 * Rename `s3.exclusive-create` config to `delta.s3.transaction-log-conditional-writes.enabled`. ({issue}`27372`)
+* {{breaking}} Require `PutObjectTagging` AWS S3 permission when writing to tables in S3 buckets, 
+  unless `delta.s3.transaction-log-conditional-writes.enabled` is set to `false`. ({issue}`27388`)
 * Fix incorrect results for queries involving `IS NOT DISTINCT FROM`. ({issue}`27213`)
 * Fix failure when writing to tables created by Databricks 17.3. ({issue}`27100`)
 * Fix failure when checking Azure hierarchical namespaces. ({issue}`27278`)
