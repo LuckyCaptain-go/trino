@@ -177,6 +177,7 @@ import org.apache.iceberg.SortField;
 import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.StatisticsFile;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.TableScan;
 import org.apache.iceberg.Transaction;
@@ -379,6 +380,7 @@ import static io.trino.spi.StandardErrorCode.TABLE_ALREADY_EXISTS;
 import static io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND;
 import static io.trino.spi.StandardErrorCode.TYPE_MISMATCH;
 import static io.trino.spi.connector.MaterializedViewFreshness.Freshness.FRESH;
+import static io.trino.spi.connector.MaterializedViewFreshness.Freshness.FRESH_WITHIN_GRACE_PERIOD;
 import static io.trino.spi.connector.MaterializedViewFreshness.Freshness.STALE;
 import static io.trino.spi.connector.MaterializedViewFreshness.Freshness.UNKNOWN;
 import static io.trino.spi.connector.RetryMode.NO_RETRIES;
@@ -632,6 +634,40 @@ public class IcebergMetadata
         return tableHandleForCurrentSnapshot(session, tableName, table);
     }
 
+    // TODO: Remove when Iceberg v3 is fully supported
+    private static void validateTableForTrino(BaseTable table, Optional<Long> tableSnapshotId)
+    {
+        Snapshot snapshot = tableSnapshotId
+                .map(table::snapshot)
+                .orElse(table.currentSnapshot());
+        if (snapshot == null) {
+            // empty table, nothing to validate
+            return;
+        }
+
+        TableMetadata metadata = table.operations().current();
+        if (metadata.formatVersion() < 3) {
+            return;
+        }
+
+        Schema schema = metadata.schemasById().get(snapshot.schemaId());
+        if (schema == null) {
+            schema = metadata.schema();
+        }
+
+        // Reject schema default values (initial-default / write-default)
+        for (Types.NestedField field : schema.columns()) {
+            if (field.initialDefault() != null || field.writeDefault() != null) {
+                throw new TrinoException(NOT_SUPPORTED, "Iceberg v3 column default values are not supported");
+            }
+        }
+
+        // Reject Iceberg table encryption
+        if (!metadata.encryptionKeys().isEmpty() || snapshot.keyId() != null || metadata.properties().containsKey("encryption.key-id")) {
+            throw new TrinoException(NOT_SUPPORTED, "Iceberg table encryption is not supported");
+        }
+    }
+
     private IcebergTableHandle tableHandleForCurrentSnapshot(ConnectorSession session, SchemaTableName tableName, BaseTable table)
     {
         return tableHandleForSnapshot(
@@ -651,6 +687,7 @@ public class IcebergMetadata
             Schema tableSchema,
             Optional<PartitionSpec> partitionSpec)
     {
+        validateTableForTrino(table, tableSnapshotId);
         Map<String, String> tableProperties = table.properties();
         return new IcebergTableHandle(
                 tableName.getSchemaName(),
@@ -1246,7 +1283,7 @@ public class IcebergMetadata
     public Optional<io.trino.spi.type.Type> getSupportedType(ConnectorSession session, Map<String, Object> tableProperties, io.trino.spi.type.Type type)
     {
         io.trino.spi.type.Type newType = coerceType(type);
-        if (type.getTypeSignature().equals(newType.getTypeSignature())) {
+        if (type.equals(newType)) {
             return Optional.empty();
         }
         return Optional.of(newType);
@@ -1426,9 +1463,10 @@ public class IcebergMetadata
     public ConnectorInsertTableHandle beginInsert(ConnectorSession session, ConnectorTableHandle tableHandle, List<ColumnHandle> columns, RetryMode retryMode)
     {
         IcebergTableHandle table = (IcebergTableHandle) tableHandle;
-        Table icebergTable = catalog.loadTable(session, table.getSchemaTableName());
+        BaseTable icebergTable = (BaseTable) catalog.loadTable(session, table.getSchemaTableName());
 
         validateNotModifyingOldSnapshot(table, icebergTable);
+        validateTableForTrino(icebergTable, Optional.ofNullable(icebergTable.currentSnapshot()).map(Snapshot::snapshotId));
 
         beginTransaction(icebergTable);
 
@@ -1688,12 +1726,27 @@ public class IcebergMetadata
 
         Table icebergTable = catalog.loadTable(session, tableHandle.getSchemaTableName());
 
+        verifyTableVersionForExecute(ADD_FILES, 2, icebergTable);
+
         return Optional.of(new IcebergTableExecuteHandle(
                 tableHandle.getSchemaTableName(),
                 ADD_FILES,
                 new IcebergAddFilesHandle(location, format, recursiveDirectory),
                 icebergTable.location(),
                 icebergTable.io().properties()));
+    }
+
+    private static void verifyTableVersionForExecute(IcebergTableProcedureId icebergTableProcedureId, int maxVersion, Table icebergTable)
+    {
+        int tableFormatVersion = formatVersion(icebergTable);
+        if (tableFormatVersion > maxVersion) {
+            throw new TrinoException(NOT_SUPPORTED, format(
+                    "%s is not supported for Iceberg table format version > %d. Table %s format version is %s.",
+                    icebergTableProcedureId.name(),
+                    maxVersion,
+                    icebergTable.name(),
+                    tableFormatVersion));
+        }
     }
 
     private Optional<ConnectorTableExecuteHandle> getTableHandleForAddFilesFromTable(ConnectorSession session, ConnectorAccessControl accessControl, IcebergTableHandle tableHandle, Map<String, Object> executeProperties)
@@ -1706,6 +1759,9 @@ public class IcebergMetadata
         Map<String, String> partitionFilter = (Map<String, String>) executeProperties.get("partition_filter");
         RecursiveDirectory recursiveDirectory = (RecursiveDirectory) executeProperties.getOrDefault("recursive_directory", "fail");
 
+        Table icebergTable = catalog.loadTable(session, tableHandle.getSchemaTableName());
+        verifyTableVersionForExecute(ADD_FILES_FROM_TABLE, OPTIMIZE_MAX_SUPPORTED_TABLE_VERSION, icebergTable);
+
         HiveMetastore metastore = metastoreFactory.orElseThrow(() -> new TrinoException(NOT_SUPPORTED, "This catalog does not support add_files_from_table procedure"))
                 .createMetastore(Optional.of(session.getIdentity()));
         SchemaTableName sourceName = new SchemaTableName(schemaName, tableName);
@@ -1713,8 +1769,6 @@ public class IcebergMetadata
         accessControl.checkCanSelectFromColumns(null, sourceName, Stream.concat(sourceTable.getDataColumns().stream(), sourceTable.getPartitionColumns().stream())
                 .map(Column::getName)
                 .collect(toImmutableSet()));
-
-        Table icebergTable = catalog.loadTable(session, tableHandle.getSchemaTableName());
 
         checkProcedureArgument(
                 icebergTable.schema().columns().size() >= sourceTable.getDataColumns().size(),
@@ -1852,15 +1906,7 @@ public class IcebergMetadata
 
         validateNotModifyingOldSnapshot(table, icebergTable);
 
-        int tableFormatVersion = formatVersion(icebergTable);
-        if (tableFormatVersion > OPTIMIZE_MAX_SUPPORTED_TABLE_VERSION) {
-            throw new TrinoException(NOT_SUPPORTED, format(
-                    "%s is not supported for Iceberg table format version > %d. Table %s format version is %s.",
-                    OPTIMIZE.name(),
-                    OPTIMIZE_MAX_SUPPORTED_TABLE_VERSION,
-                    table.getSchemaTableName(),
-                    tableFormatVersion));
-        }
+        verifyTableVersionForExecute(OPTIMIZE, OPTIMIZE_MAX_SUPPORTED_TABLE_VERSION, icebergTable);
 
         beginTransaction(icebergTable);
 
@@ -3118,8 +3164,12 @@ public class IcebergMetadata
 
     private static void verifyTableVersionForUpdate(IcebergTableHandle table)
     {
-        if (table.getFormatVersion() < 2) {
+        int formatVersion = table.getFormatVersion();
+        if (formatVersion < 2) {
             throw new TrinoException(NOT_SUPPORTED, "Iceberg table updates require at least format version 2");
+        }
+        if (formatVersion > 2) {
+            throw new TrinoException(NOT_SUPPORTED, "Iceberg table updates for format version %s are not supported yet".formatted(formatVersion));
         }
     }
 
@@ -3796,6 +3846,7 @@ public class IcebergMetadata
                     .withFileSizeInBytes(task.fileSizeInBytes())
                     .withFormat(table.fileFormat().toIceberg())
                     .withMetrics(task.metrics().metrics());
+            task.fileSplitOffsets().ifPresent(builder::withSplitOffsets);
 
             if (!icebergTable.spec().fields().isEmpty()) {
                 String partitionDataJson = task.partitionDataJson()
@@ -3878,7 +3929,7 @@ public class IcebergMetadata
     }
 
     @Override
-    public MaterializedViewFreshness getMaterializedViewFreshness(ConnectorSession session, SchemaTableName materializedViewName)
+    public MaterializedViewFreshness getMaterializedViewFreshness(ConnectorSession session, SchemaTableName materializedViewName, boolean considerGracePeriod)
     {
         Optional<ConnectorMaterializedViewDefinition> materializedViewDefinition = getMaterializedView(session, materializedViewName);
         if (materializedViewDefinition.isEmpty()) {
@@ -3899,8 +3950,10 @@ public class IcebergMetadata
                 .map(snapshot -> Boolean.valueOf(snapshot.summary().getOrDefault(DEPENDS_ON_TABLE_FUNCTIONS, "false")))
                 .orElse(false);
 
-        Optional<Instant> refreshTime = currentSnapshot.map(snapshot -> snapshot.summary().get(TRINO_QUERY_START_TIME))
-                .map(Instant::parse)
+        Optional<Instant> refreshStartTime = currentSnapshot.map(snapshot -> snapshot.summary().get(TRINO_QUERY_START_TIME))
+                .map(Instant::parse);
+        Optional<Instant> refreshTime = refreshStartTime
+                // Fallback to snapshot commit time (end of refresh) for MVs defined before TRINO_QUERY_START_TIME was introduced
                 .or(() -> currentSnapshot.map(snapshot -> Instant.ofEpochMilli(snapshot.timestampMillis())));
 
         if (dependsOnTableFunctions) {
@@ -3912,6 +3965,21 @@ public class IcebergMetadata
             // Information missing. While it's "unknown" whether storage is stale, we return "stale".
             // Normally dependsOnTables may be missing only when there was no refresh yet.
             return new MaterializedViewFreshness(STALE, Optional.empty());
+        }
+
+        Optional<java.time.Duration> gracePeriod = materializedViewDefinition.get().getGracePeriod();
+        if (considerGracePeriod && withinGracePeriod(session.getStart(), refreshStartTime, gracePeriod)) {
+            // To determine freshness, we normally load current metadata for each base table and check if there
+            // is a newer snapshot than the recorded one (DEPENDS_ON_TABLES). This requires expensive metastore
+            // operations for each base Iceberg table.
+            //
+            // The refresh query can read base table snapshots created before or during its execution. In the most
+            // pessimistic scenario, a new base table snapshot is created immediately after the refresh started
+            // (at refreshStartTime + epsilon), but the refresh reads an older snapshot. This new snapshot would
+            // not be recorded in DEPENDS_ON_TABLES, making the MV technically stale. However, when the caller set
+            // considerGracePeriod to true and refreshStartTime + gracePeriod > referenceTime, we can safely say that
+            // the MV is at least within the grace period because refreshStartTime is before the new snapshot creation time.
+            return new MaterializedViewFreshness(FRESH_WITHIN_GRACE_PERIOD, Optional.empty());
         }
 
         boolean hasUnknownTables = false;
@@ -3956,16 +4024,30 @@ public class IcebergMetadata
             }
         }
 
-        Optional<Instant> lastFreshTime = firstTableChange
+        Optional<Instant> lastKnownFreshTime = firstTableChange
                 .map(Instant::ofEpochMilli)
                 .or(() -> refreshTime);
         if (hasStaleIcebergTables) {
-            return new MaterializedViewFreshness(STALE, lastFreshTime);
+            return new MaterializedViewFreshness(STALE, lastKnownFreshTime);
         }
         if (hasUnknownTables) {
-            return new MaterializedViewFreshness(UNKNOWN, lastFreshTime);
+            return new MaterializedViewFreshness(UNKNOWN, lastKnownFreshTime);
         }
         return new MaterializedViewFreshness(FRESH, Optional.empty());
+    }
+
+    private boolean withinGracePeriod(Instant sessionStart, Optional<Instant> refreshStartTime, Optional<java.time.Duration> gracePeriod)
+    {
+        if (gracePeriod.isEmpty()) {
+            // infinite grace period
+            return true;
+        }
+        //noinspection OptionalIsPresent
+        if (refreshStartTime.isEmpty()) {
+            // refresh time unknown
+            return false;
+        }
+        return refreshStartTime.get().plus(gracePeriod.get()).isAfter(sessionStart);
     }
 
     private TableChangeInfo getTableChangeInfo(ConnectorSession session, String entry)
