@@ -20,17 +20,19 @@ import com.google.common.io.Resources;
 import io.trino.tpcds.Table;
 
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.Writer;
 import java.net.URL;
+import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Optional;
 
 import static io.trino.plugin.base.util.JsonUtils.parseJson;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.nio.file.StandardOpenOption.CREATE;
+import static java.nio.file.StandardOpenOption.WRITE;
 
 public class TableStatisticsDataRepository
 {
@@ -44,7 +46,7 @@ public class TableStatisticsDataRepository
     {
         schemaName = normalizeSchemaName(schemaName);
         String filename = table.getName();
-        Path path = Paths.get("trino-tpcds", "src", "main", "resources", "tpcds", "statistics", schemaName, filename + ".json");
+        Path path = Path.of("trino-tpcds", "src", "main", "resources", "tpcds", "statistics", schemaName, filename + ".json");
         writeStatistics(path, statisticsData);
     }
 
@@ -62,8 +64,8 @@ public class TableStatisticsDataRepository
             objectMapper
                     .writerWithDefaultPrettyPrinter()
                     .writeValue(file, tableStatisticsData);
-            try (FileWriter fileWriter = new FileWriter(file, UTF_8, true)) {
-                fileWriter.append('\n');
+            try (Writer writer = Files.newBufferedWriter(path, UTF_8, CREATE, WRITE)) {
+                writer.append('\n');
             }
         }
         catch (IOException e) {

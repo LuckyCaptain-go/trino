@@ -29,6 +29,7 @@ import io.airlift.concurrent.MoreFutures;
 import io.airlift.json.JsonCodec;
 import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
+import io.airlift.slice.Slices;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.filesystem.FileEntry;
@@ -45,10 +46,11 @@ import io.trino.plugin.base.projection.ApplyProjectionUtil;
 import io.trino.plugin.base.projection.ApplyProjectionUtil.ProjectedColumnRepresentation;
 import io.trino.plugin.hive.HiveCompressionCodec;
 import io.trino.plugin.hive.HiveStorageFormat;
-import io.trino.plugin.hive.HiveWrittenPartitions;
 import io.trino.plugin.iceberg.aggregation.DataSketchStateSerializer;
 import io.trino.plugin.iceberg.aggregation.IcebergThetaSketchForStats;
 import io.trino.plugin.iceberg.catalog.TrinoCatalog;
+import io.trino.plugin.iceberg.delete.DeletionVectorWriter;
+import io.trino.plugin.iceberg.delete.DeletionVectorWriter.DeletionVectorInfo;
 import io.trino.plugin.iceberg.functions.IcebergFunctionProvider;
 import io.trino.plugin.iceberg.procedure.IcebergAddFilesFromTableHandle;
 import io.trino.plugin.iceberg.procedure.IcebergAddFilesHandle;
@@ -145,6 +147,7 @@ import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.VarcharType;
+import jakarta.annotation.Nullable;
 import org.apache.datasketches.theta.CompactSketch;
 import org.apache.iceberg.AppendFiles;
 import org.apache.iceberg.BaseTable;
@@ -191,6 +194,7 @@ import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.NotFoundException;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.expressions.Expressions;
+import org.apache.iceberg.expressions.Literal;
 import org.apache.iceberg.expressions.Term;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.types.Type;
@@ -238,7 +242,6 @@ import java.util.function.UnaryOperator;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
-import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
@@ -274,6 +277,10 @@ import static io.trino.plugin.iceberg.IcebergColumnHandle.TRINO_ROW_ID_NAME;
 import static io.trino.plugin.iceberg.IcebergColumnHandle.fileModifiedTimeColumnHandle;
 import static io.trino.plugin.iceberg.IcebergColumnHandle.partitionColumnHandle;
 import static io.trino.plugin.iceberg.IcebergColumnHandle.pathColumnHandle;
+import static io.trino.plugin.iceberg.IcebergDefaultValues.formatIcebergDefaultAsSql;
+import static io.trino.plugin.iceberg.IcebergDefaultValues.parseDefaultValue;
+import static io.trino.plugin.iceberg.IcebergDefaultValues.toIcebergLiteral;
+import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_BAD_DATA;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_CATALOG_ERROR;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_COMMIT_ERROR;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_FILESYSTEM_ERROR;
@@ -293,7 +300,6 @@ import static io.trino.plugin.iceberg.IcebergSessionProperties.getQueryPartition
 import static io.trino.plugin.iceberg.IcebergSessionProperties.getRemoveOrphanFilesMinRetention;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.isBucketExecutionEnabled;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.isCollectExtendedStatisticsOnWrite;
-import static io.trino.plugin.iceberg.IcebergSessionProperties.isExtendedStatisticsEnabled;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.isFileBasedConflictDetectionEnabled;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.isIncrementalRefreshEnabled;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.isMergeManifestsOnWrite;
@@ -317,6 +323,7 @@ import static io.trino.plugin.iceberg.IcebergTableProperties.ORC_BLOOM_FILTER_CO
 import static io.trino.plugin.iceberg.IcebergTableProperties.PARQUET_BLOOM_FILTER_COLUMNS_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableProperties.PARTITIONING_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableProperties.SORTED_BY_PROPERTY;
+import static io.trino.plugin.iceberg.IcebergTableProperties.getFormatVersion;
 import static io.trino.plugin.iceberg.IcebergTableProperties.getPartitioning;
 import static io.trino.plugin.iceberg.IcebergTableProperties.getTableLocation;
 import static io.trino.plugin.iceberg.IcebergTableProperties.validateCompression;
@@ -402,6 +409,7 @@ import static java.lang.Math.floorDiv;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
+import static java.util.Objects.requireNonNullElse;
 import static java.util.function.Function.identity;
 import static java.util.stream.Collectors.joining;
 import static org.apache.iceberg.MetadataTableType.ALL_ENTRIES;
@@ -487,6 +495,7 @@ public class IcebergMetadata
     private final ExecutorService icebergPlanningExecutor;
     private final ExecutorService icebergFileDeleteExecutor;
     private final Map<IcebergTableHandle, AtomicReference<TableStatistics>> tableStatisticsCache = new ConcurrentHashMap<>();
+    private final DeletionVectorWriter deletionVectorWriter;
 
     private Transaction transaction;
     private Optional<Long> fromSnapshotForRefresh = Optional.empty();
@@ -498,6 +507,7 @@ public class IcebergMetadata
             IcebergFileSystemFactory fileSystemFactory,
             TableStatisticsReader tableStatisticsReader,
             TableStatisticsWriter tableStatisticsWriter,
+            DeletionVectorWriter deletionVectorWriter,
             Optional<HiveMetastoreFactory> metastoreFactory,
             boolean addFilesProcedureEnabled,
             Predicate<String> allowedExtraProperties,
@@ -519,6 +529,7 @@ public class IcebergMetadata
         this.metadataFetchingExecutor = requireNonNull(metadataFetchingExecutor, "metadataFetchingExecutor is null");
         this.icebergPlanningExecutor = requireNonNull(icebergPlanningExecutor, "icebergPlanningExecutor is null");
         this.icebergFileDeleteExecutor = requireNonNull(icebergFileDeleteExecutor, "icebergFileDeleteExecutor is null");
+        this.deletionVectorWriter = requireNonNull(deletionVectorWriter, "deletionVectorWriter is null");
     }
 
     @Override
@@ -648,18 +659,6 @@ public class IcebergMetadata
         TableMetadata metadata = table.operations().current();
         if (metadata.formatVersion() < 3) {
             return;
-        }
-
-        Schema schema = metadata.schemasById().get(snapshot.schemaId());
-        if (schema == null) {
-            schema = metadata.schema();
-        }
-
-        // Reject schema default values (initial-default / write-default)
-        for (Types.NestedField field : schema.columns()) {
-            if (field.initialDefault() != null || field.writeDefault() != null) {
-                throw new TrinoException(NOT_SUPPORTED, "Iceberg v3 column default values are not supported");
-            }
         }
 
         // Reject Iceberg table encryption
@@ -1041,13 +1040,26 @@ public class IcebergMetadata
     @Override
     public ColumnMetadata getColumnMetadata(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle columnHandle)
     {
+        IcebergTableHandle icebergTableHandle = (IcebergTableHandle) tableHandle;
         IcebergColumnHandle column = (IcebergColumnHandle) columnHandle;
+
+        // Look up write-default from the table schema
+        Optional<String> defaultValue = Optional.empty();
+        if (!isMetadataColumnId(column.getId())) {
+            Schema tableSchema = SchemaParser.fromJson(icebergTableHandle.getTableSchemaJson());
+            NestedField field = tableSchema.findField(column.getId());
+            if (field != null) {
+                defaultValue = formatIcebergDefaultAsSql(field.writeDefault(), field.type());
+            }
+        }
+
         return ColumnMetadata.builder()
                 .setName(column.getName())
                 .setType(column.getType())
                 .setNullable(column.isNullable())
                 .setComment(column.getComment())
                 .setHidden(isMetadataColumnId(column.getId()))
+                .setDefaultValue(defaultValue)
                 .build();
     }
 
@@ -1329,6 +1341,9 @@ public class IcebergMetadata
             throw new SchemaNotFoundException(schemaName);
         }
 
+        int formatVersion = getFormatVersion(tableMetadata.getProperties());
+        tableMetadata.getColumns().forEach(column -> checkDefaultValueCompatibility(formatVersion, column));
+
         String tableLocation = null;
         if (replace) {
             ConnectorTableHandle tableHandle = getTableHandle(session, tableMetadata.getTableSchema().getTable(), Optional.empty(), Optional.empty());
@@ -1592,9 +1607,11 @@ public class IcebergMetadata
         commitTransaction(transaction, "insert");
         transaction = null;
 
-        return Optional.of(new HiveWrittenPartitions(commitTasks.stream()
-                .map(CommitTaskData::path)
-                .collect(toImmutableList())));
+        Map<String, String> summary = icebergTable.currentSnapshot().summary();
+        if (summary == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new IcebergCommitMetadata(summary));
     }
 
     @Override
@@ -1686,7 +1703,7 @@ public class IcebergMetadata
     {
         Duration retentionThreshold = (Duration) executeProperties.get(RETENTION_THRESHOLD);
         Table icebergTable = catalog.loadTable(session, tableHandle.getSchemaTableName());
-        int retainLast = firstNonNull(
+        int retainLast = requireNonNullElse(
                 (Integer) executeProperties.get("retain_last"),
                 propertyAsInt(icebergTable.properties(), MIN_SNAPSHOTS_TO_KEEP, MIN_SNAPSHOTS_TO_KEEP_DEFAULT));
         boolean cleanExpiredMetadata = (boolean) executeProperties.get("clean_expired_metadata");
@@ -2020,7 +2037,7 @@ public class IcebergMetadata
             commit(update, session);
         }
         catch (UncheckedIOException | ValidationException | CommitFailedException | CommitStateUnknownException e) {
-            throw new TrinoException(ICEBERG_COMMIT_ERROR, format("Failed to commit during %s: %s", operation, firstNonNull(e.getMessage(), e)), e);
+            throw new TrinoException(ICEBERG_COMMIT_ERROR, format("Failed to commit during %s: %s", operation, requireNonNullElse(e.getMessage(), e)), e);
         }
     }
 
@@ -2030,7 +2047,7 @@ public class IcebergMetadata
             transaction.commitTransaction();
         }
         catch (UncheckedIOException | ValidationException | CommitFailedException | CommitStateUnknownException e) {
-            throw new TrinoException(ICEBERG_COMMIT_ERROR, format("Failed to commit the transaction during %s: %s", operation, firstNonNull(e.getMessage(), e)), e);
+            throw new TrinoException(ICEBERG_COMMIT_ERROR, format("Failed to commit the transaction during %s: %s", operation, requireNonNullElse(e.getMessage(), e)), e);
         }
     }
 
@@ -2653,12 +2670,23 @@ public class IcebergMetadata
             throw new TrinoException(NOT_SUPPORTED, "This connector does not support adding not null columns");
         }
         Table icebergTable = catalog.loadTable(session, ((IcebergTableHandle) tableHandle).getSchemaTableName());
+        checkDefaultValueCompatibility(formatVersion(icebergTable), column);
         // Start explicitly with highestFieldId + 2 to account for existing columns and the new one being
         // added - instead of relying on addColumn in iceberg library to assign Ids
         AtomicInteger nextFieldId = new AtomicInteger(icebergTable.schema().highestFieldId() + 2);
         try {
             UpdateSchema updateSchema = icebergTable.updateSchema();
-            updateSchema.addColumn(null, column.getName(), toIcebergTypeForNewColumn(column.getType(), nextFieldId), column.getComment());
+            org.apache.iceberg.types.Type icebergType = toIcebergTypeForNewColumn(column.getType(), nextFieldId);
+
+            // Handle default value if present
+            Literal<?> defaultLiteral = column.getDefaultValue()
+                    .map(defaultValue -> {
+                        Object parsed = parseDefaultValue(defaultValue, column.getType(), icebergType);
+                        return toIcebergLiteral(parsed, icebergType);
+                    })
+                    .orElse(null);
+
+            updateSchema.addColumn(null, column.getName(), icebergType, column.getComment(), defaultLiteral);
             switch (position) {
                 case ColumnPosition.First _ -> updateSchema.moveFirst(column.getName());
                 case ColumnPosition.After after -> updateSchema.moveAfter(column.getName(), after.columnName());
@@ -2667,7 +2695,50 @@ public class IcebergMetadata
             updateSchema.commit();
         }
         catch (RuntimeException e) {
-            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to add column: " + firstNonNull(e.getMessage(), e), e);
+            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to add column: " + requireNonNullElse(e.getMessage(), e), e);
+        }
+    }
+
+    @Override
+    public void setDefaultValue(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle column, String defaultValue)
+    {
+        IcebergTableHandle icebergTableHandle = (IcebergTableHandle) tableHandle;
+        IcebergColumnHandle columnHandle = (IcebergColumnHandle) column;
+
+        Table icebergTable = catalog.loadTable(session, icebergTableHandle.getSchemaTableName());
+        checkDefaultValueCompatibility(formatVersion(icebergTable), true);
+
+        NestedField field = icebergTable.schema().findField(columnHandle.getId());
+        Object parsed = parseDefaultValue(defaultValue, columnHandle.getType(), field.type());
+        Literal<?> defaultLiteral = toIcebergLiteral(parsed, field.type());
+
+        try {
+            icebergTable.updateSchema()
+                    .updateColumnDefault(field.name(), defaultLiteral)
+                    .commit();
+        }
+        catch (RuntimeException e) {
+            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to set default value: " + requireNonNullElse(e.getMessage(), e), e);
+        }
+    }
+
+    @Override
+    public void dropDefaultValue(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle column)
+    {
+        IcebergTableHandle icebergTableHandle = (IcebergTableHandle) tableHandle;
+        IcebergColumnHandle columnHandle = (IcebergColumnHandle) column;
+
+        Table icebergTable = catalog.loadTable(session, icebergTableHandle.getSchemaTableName());
+        checkDefaultValueCompatibility(formatVersion(icebergTable), true);
+
+        NestedField field = icebergTable.schema().findField(columnHandle.getId());
+        try {
+            icebergTable.updateSchema()
+                    .updateColumnDefault(field.name(), null)
+                    .commit();
+        }
+        catch (RuntimeException e) {
+            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to drop default value: " + requireNonNullElse(e.getMessage(), e), e);
         }
     }
 
@@ -2706,7 +2777,7 @@ public class IcebergMetadata
                     .commit();
         }
         catch (RuntimeException e) {
-            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to add field: " + firstNonNull(e.getMessage(), e), e);
+            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to add field: " + requireNonNullElse(e.getMessage(), e), e);
         }
     }
 
@@ -2756,7 +2827,7 @@ public class IcebergMetadata
                     .commit();
         }
         catch (RuntimeException e) {
-            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to drop column: " + firstNonNull(e.getMessage(), e), e);
+            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to drop column: " + requireNonNullElse(e.getMessage(), e), e);
         }
     }
 
@@ -2771,7 +2842,7 @@ public class IcebergMetadata
                     .commit();
         }
         catch (RuntimeException e) {
-            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to rename column: " + firstNonNull(e.getMessage(), e), e);
+            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to rename column: " + requireNonNullElse(e.getMessage(), e), e);
         }
     }
 
@@ -2792,7 +2863,7 @@ public class IcebergMetadata
                     .commit();
         }
         catch (RuntimeException e) {
-            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to rename field: " + firstNonNull(e.getMessage(), e), e);
+            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to rename field: " + requireNonNullElse(e.getMessage(), e), e);
         }
     }
 
@@ -2813,7 +2884,7 @@ public class IcebergMetadata
             schemaUpdate.commit();
         }
         catch (RuntimeException e) {
-            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to set column type: " + firstNonNull(e.getMessage(), e), e);
+            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to set column type: " + requireNonNullElse(e.getMessage(), e), e);
         }
     }
 
@@ -2909,7 +2980,7 @@ public class IcebergMetadata
                     .commit();
         }
         catch (RuntimeException e) {
-            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to set field type: " + firstNonNull(e.getMessage(), e), e);
+            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to set field type: " + requireNonNullElse(e.getMessage(), e), e);
         }
     }
 
@@ -2928,14 +2999,14 @@ public class IcebergMetadata
                     .commit();
         }
         catch (RuntimeException e) {
-            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to drop a not null constraint: " + firstNonNull(e.getMessage(), e), e);
+            throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to drop a not null constraint: " + requireNonNullElse(e.getMessage(), e), e);
         }
     }
 
     @Override
     public TableStatisticsMetadata getStatisticsCollectionMetadataForWrite(ConnectorSession session, ConnectorTableMetadata tableMetadata, boolean tableReplace)
     {
-        if (!isExtendedStatisticsEnabled(session) || !isCollectExtendedStatisticsOnWrite(session)) {
+        if (!isCollectExtendedStatisticsOnWrite(session)) {
             return TableStatisticsMetadata.empty();
         }
 
@@ -2968,7 +3039,7 @@ public class IcebergMetadata
         Set<Integer> columnIds = columns.stream()
                 .map(IcebergColumnHandle::getId)
                 .collect(toImmutableSet());
-        Map<Integer, Long> ndvs = readNdvs(icebergTable, snapshotId, columnIds, true);
+        Map<Integer, Long> ndvs = readNdvs(icebergTable, snapshotId, columnIds);
         // Avoid collecting NDV stats on columns where we don't know the existing NDV count
         Set<String> columnsWithExtendedStatistics = columns.stream()
                 .filter(column -> ndvs.containsKey(column.getId()))
@@ -2981,11 +3052,6 @@ public class IcebergMetadata
     public ConnectorAnalyzeMetadata getStatisticsCollectionMetadata(ConnectorSession session, ConnectorTableHandle tableHandle, Map<String, Object> analyzeProperties)
     {
         IcebergTableHandle handle = checkValidTableHandle(tableHandle);
-        if (!isExtendedStatisticsEnabled(session)) {
-            throw new TrinoException(NOT_SUPPORTED, "Analyze is not enabled. You can enable analyze using %s config or %s catalog session property".formatted(
-                    IcebergConfig.EXTENDED_STATISTICS_CONFIG,
-                    IcebergSessionProperties.EXTENDED_STATISTICS_ENABLED));
-        }
 
         checkArgument(handle.getTableType() == DATA, "Cannot analyze non-DATA table: %s", handle.getTableType());
 
@@ -3168,9 +3234,6 @@ public class IcebergMetadata
         if (formatVersion < 2) {
             throw new TrinoException(NOT_SUPPORTED, "Iceberg table updates require at least format version 2");
         }
-        if (formatVersion > 2) {
-            throw new TrinoException(NOT_SUPPORTED, "Iceberg table updates for format version %s are not supported yet".formatted(formatVersion));
-        }
     }
 
     private static void validateNotModifyingOldSnapshot(IcebergTableHandle table, Table icebergTable)
@@ -3198,7 +3261,8 @@ public class IcebergMetadata
         Schema schema = SchemaParser.fromJson(table.getTableSchemaJson());
 
         RowDelta rowDelta = transaction.newRowDelta();
-        table.getSnapshotId().map(icebergTable::snapshot).ifPresent(s -> rowDelta.validateFromSnapshot(s.snapshotId()));
+        Optional<Long> baseSnapshotId = table.getSnapshotId();
+        baseSnapshotId.map(icebergTable::snapshot).ifPresent(snapshot -> rowDelta.validateFromSnapshot(snapshot.snapshotId()));
         TupleDomain<IcebergColumnHandle> dataColumnPredicate = table.getEnforcedPredicate().filter((column, domain) -> !isMetadataColumnId(column.getId()));
         TupleDomain<IcebergColumnHandle> effectivePredicate = dataColumnPredicate.intersect(table.getUnenforcedPredicate());
         if (isFileBasedConflictDetectionEnabled(session)) {
@@ -3220,48 +3284,97 @@ public class IcebergMetadata
         rowDelta.validateNoConflictingDeleteFiles();
         rowDelta.scanManifestsWith(icebergScanExecutor);
 
-        ImmutableSet.Builder<String> referencedDataFiles = ImmutableSet.builder();
+        List<CommitTaskData> dataTasks = new ArrayList<>();
+        List<CommitTaskData> deleteTasks = new ArrayList<>();
+
         for (CommitTaskData task : commitTasks) {
+            switch (task.content()) {
+                case DATA -> dataTasks.add(task);
+                case POSITION_DELETES -> deleteTasks.add(task);
+                case EQUALITY_DELETES -> throw new UnsupportedOperationException("Unsupported task content: " + task.content());
+            }
+        }
+
+        for (CommitTaskData task : dataTasks) {
             PartitionSpec partitionSpec = PartitionSpecParser.fromJson(schema, task.partitionSpecJson());
             Type[] partitionColumnTypes = partitionSpec.fields().stream()
                     .map(field -> field.transform().getResultType(schema.findType(field.sourceId())))
                     .toArray(Type[]::new);
-            switch (task.content()) {
-                case POSITION_DELETES -> {
-                    FileMetadata.Builder deleteBuilder = FileMetadata.deleteFileBuilder(partitionSpec)
-                            .withPath(task.path())
-                            .withFormat(task.fileFormat().toIceberg())
-                            .ofPositionDeletes()
-                            .withFileSizeInBytes(task.fileSizeInBytes())
-                            .withMetrics(task.metrics().metrics());
-                    task.fileSplitOffsets().ifPresent(deleteBuilder::withSplitOffsets);
-                    if (!partitionSpec.fields().isEmpty()) {
-                        String partitionDataJson = task.partitionDataJson()
-                                .orElseThrow(() -> new VerifyException("No partition data for partitioned table"));
-                        deleteBuilder.withPartition(PartitionData.fromJson(partitionDataJson, partitionColumnTypes));
-                    }
-                    rowDelta.addDeletes(deleteBuilder.build());
-                    task.referencedDataFile().ifPresent(referencedDataFiles::add);
-                }
-                case DATA -> {
-                    DataFiles.Builder builder = DataFiles.builder(partitionSpec)
-                            .withPath(task.path())
-                            .withFormat(task.fileFormat().toIceberg())
-                            .withFileSizeInBytes(task.fileSizeInBytes())
-                            .withMetrics(task.metrics().metrics());
-                    if (!icebergTable.spec().fields().isEmpty()) {
-                        String partitionDataJson = task.partitionDataJson()
-                                .orElseThrow(() -> new VerifyException("No partition data for partitioned table"));
-                        builder.withPartition(PartitionData.fromJson(partitionDataJson, partitionColumnTypes));
-                    }
-                    rowDelta.addRows(builder.build());
-                }
-                default -> throw new UnsupportedOperationException("Unsupported task content: " + task.content());
+
+            DataFiles.Builder builder = DataFiles.builder(partitionSpec)
+                    .withPath(task.path())
+                    .withFormat(task.fileFormat().toIceberg())
+                    .withFileSizeInBytes(task.fileSizeInBytes())
+                    .withMetrics(task.metrics().metrics());
+
+            if (!icebergTable.spec().fields().isEmpty()) {
+                String partitionDataJson = task.partitionDataJson()
+                        .orElseThrow(() -> new VerifyException("No partition data for partitioned table"));
+                builder.withPartition(PartitionData.fromJson(partitionDataJson, partitionColumnTypes));
             }
+            rowDelta.addRows(builder.build());
         }
 
-        rowDelta.validateDataFilesExist(referencedDataFiles.build());
+        if (deleteTasks.isEmpty()) {
+            commitUpdateAndTransaction(rowDelta, session, transaction, "write");
+            return;
+        }
+
+        if (table.getFormatVersion() < 2) {
+            throw new TrinoException(ICEBERG_BAD_DATA, "Position delete files are not supported for Iceberg format version < 2");
+        }
+
+        rowDelta.validateDataFilesExist(deleteTasks.stream()
+                .map(CommitTaskData::referencedDataFile)
+                .flatMap(Optional::stream)
+                .toList());
+
+        if (table.getFormatVersion() == 2) {
+            for (CommitTaskData task : deleteTasks) {
+                PartitionSpec partitionSpec = PartitionSpecParser.fromJson(schema, task.partitionSpecJson());
+                FileMetadata.Builder deleteBuilder = FileMetadata.deleteFileBuilder(partitionSpec)
+                        .withPath(task.path())
+                        .withFormat(task.fileFormat().toIceberg())
+                        .ofPositionDeletes()
+                        .withFileSizeInBytes(task.fileSizeInBytes())
+                        .withMetrics(task.metrics().metrics());
+                task.fileSplitOffsets().ifPresent(deleteBuilder::withSplitOffsets);
+                toPartitionData(partitionSpec, schema, task.partitionDataJson()).ifPresent(deleteBuilder::withPartition);
+                rowDelta.addDeletes(deleteBuilder.build());
+            }
+            commitUpdateAndTransaction(rowDelta, session, transaction, "write");
+            return;
+        }
+
+        // v3 delete: deletion vector for updated files are merged with any existing delection vectors or legacy position delete files.
+        List<DeletionVectorInfo> deletionVectorInfos = deleteTasks.stream()
+                .map(task -> {
+                    PartitionSpec partitionSpec = PartitionSpecParser.fromJson(schema, task.partitionSpecJson());
+                    return new DeletionVectorInfo(
+                            task.referencedDataFile().orElseThrow(() -> new VerifyException("v3 POSITION_DELETES task missing referencedDataFile")),
+                            task.serializedDeletionVector()
+                                    .map(Slices::wrappedBuffer)
+                                    .orElseThrow(() -> new VerifyException("v3 POSITION_DELETES task missing serializedDeletionVector")),
+                            partitionSpec,
+                            toPartitionData(partitionSpec, schema, task.partitionDataJson()));
+                })
+                .toList();
+
+        deletionVectorWriter.writeDeletionVectors(session, icebergTable, table, deletionVectorInfos, rowDelta);
+
         commitUpdateAndTransaction(rowDelta, session, transaction, "write");
+    }
+
+    private static Optional<PartitionData> toPartitionData(PartitionSpec partitionSpec, Schema schema, Optional<String> partitionDataJson)
+    {
+        if (partitionSpec.fields().isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(PartitionData.fromJson(
+                partitionDataJson.orElseThrow(() -> new VerifyException("No partition data for partitioned table")),
+                partitionSpec.fields().stream()
+                        .map(field -> field.transform().getResultType(schema.findType(field.sourceId())))
+                        .toArray(Type[]::new)));
     }
 
     static TupleDomain<IcebergColumnHandle> extractTupleDomainsFromCommitTasks(IcebergTableHandle table, Table icebergTable, List<CommitTaskData> commitTasks, TypeManager typeManager)
@@ -3459,12 +3572,7 @@ public class IcebergMetadata
         else {
             Table icebergTable = catalog.loadTable(session, table.getSchemaTableName());
 
-            Set<Integer> partitionSpecIds = table.getSnapshotId().map(
-                            snapshot -> loadAllManifestsFromSnapshot(icebergTable, icebergTable.snapshot(snapshot)).stream()
-                                    .map(ManifestFile::partitionSpecId)
-                                    .collect(toImmutableSet()))
-                    // No snapshot, so no data. This case doesn't matter.
-                    .orElseGet(() -> ImmutableSet.copyOf(icebergTable.specs().keySet()));
+            Set<Integer> partitionSpecIds = getPartitionSpecIdsFromSnapshot(icebergTable, table.getSnapshotId());
 
             Map<IcebergColumnHandle, Domain> unsupported = new LinkedHashMap<>();
             Map<IcebergColumnHandle, Domain> newEnforced = new LinkedHashMap<>();
@@ -3533,7 +3641,41 @@ public class IcebergMetadata
                 false));
     }
 
-    private static List<ManifestFile> loadAllManifestsFromSnapshot(Table icebergTable, Snapshot snapshot)
+    private static Set<Integer> getPartitionSpecIdsFromSnapshot(Table icebergTable, Optional<Long> snapshotId)
+    {
+        Map<Integer, PartitionSpec> specs = icebergTable.specs();
+        // If there aren't multiple partition specs,
+        // then we don't need to read manifest list to find the specs that belong to given snapshot
+        if (specs.size() <= 1) {
+            return specs.keySet();
+        }
+        if (snapshotId.isEmpty()) {
+            // No snapshot, so no data. This case doesn't matter.
+            return specs.keySet();
+        }
+
+        Snapshot snapshot = icebergTable.snapshot(snapshotId.get());
+        // Since we're primarily concerned about predicate pushdown on partitioning
+        // of the data files, there's no need to consider delete manifests
+        return loadDataManifestsFromSnapshot(icebergTable, snapshot).stream()
+                .map(ManifestFile::partitionSpecId)
+                .collect(toImmutableSet());
+    }
+
+    private static List<ManifestFile> loadDataManifestsFromSnapshot(Table icebergTable, @Nullable Snapshot snapshot)
+    {
+        if (snapshot == null) {
+            return ImmutableList.of();
+        }
+        try {
+            return snapshot.dataManifests(icebergTable.io());
+        }
+        catch (NotFoundException | UncheckedIOException e) {
+            throw new TrinoException(ICEBERG_INVALID_METADATA, "Error accessing manifest file for table %s".formatted(icebergTable.name()), e);
+        }
+    }
+
+    private static List<ManifestFile> loadAllManifestsFromSnapshot(Table icebergTable, @Nullable Snapshot snapshot)
     {
         if (snapshot == null) {
             return ImmutableList.of();
@@ -3695,7 +3837,8 @@ public class IcebergMetadata
                 originalHandle.getPartitionSpecJson(),
                 originalHandle.getFormatVersion(),
                 originalHandle.getUnenforcedPredicate(),
-                originalHandle.getEnforcedPredicate(),
+                // Skip $file_modified_time in cache key as the statistics do not depend on it
+                originalHandle.getEnforcedPredicate().filter((column, _) -> FILE_MODIFIED_TIME.getId() != column.getId()),
                 OptionalLong.empty(), // limit is currently not included in stats and is not enforced by the connector
                 ImmutableSet.of(), // projectedColumns are used to request statistics only for the required columns, but are not part of cache key
                 originalHandle.getNameMappingJson(),
@@ -3876,9 +4019,11 @@ public class IcebergMetadata
         commitUpdateAndTransaction(appendFiles, session, transaction, "refresh materialized view");
         transaction = null;
         fromSnapshotForRefresh = Optional.empty();
-        return Optional.of(new HiveWrittenPartitions(commitTasks.stream()
-                .map(CommitTaskData::path)
-                .collect(toImmutableList())));
+        Map<String, String> summary = icebergTable.currentSnapshot().summary();
+        if (summary == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new IcebergCommitMetadata(summary));
     }
 
     @Override
@@ -4260,5 +4405,17 @@ public class IcebergMetadata
         statisticsBuilder.setRowCount(newStats.getRowCount());
         newStats.getColumnStatistics().forEach(statisticsBuilder::setColumnStatistics);
         return statisticsBuilder.build();
+    }
+
+    private static void checkDefaultValueCompatibility(int formatVersion, ColumnMetadata column)
+    {
+        checkDefaultValueCompatibility(formatVersion, column.getDefaultValue().isPresent());
+    }
+
+    private static void checkDefaultValueCompatibility(int formatVersion, boolean defaultValuePresent)
+    {
+        if (formatVersion < 3 && defaultValuePresent) {
+            throw new TrinoException(NOT_SUPPORTED, "Default column values are not supported for Iceberg table format version < 3");
+        }
     }
 }

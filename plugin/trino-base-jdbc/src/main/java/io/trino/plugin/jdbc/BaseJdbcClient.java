@@ -78,7 +78,6 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Stream;
 
-import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.emptyToNull;
@@ -112,6 +111,7 @@ import static java.sql.DatabaseMetaData.columnNoNulls;
 import static java.util.Collections.emptyIterator;
 import static java.util.Collections.emptyMap;
 import static java.util.Objects.requireNonNull;
+import static java.util.Objects.requireNonNullElse;
 import static java.util.stream.Collectors.joining;
 
 public abstract class BaseJdbcClient
@@ -176,7 +176,7 @@ public abstract class BaseJdbcClient
             while (resultSet.next()) {
                 String schemaName = resultSet.getString("TABLE_SCHEM");
                 // skip internal schemas
-                if (filterSchema(schemaName)) {
+                if (filterRemoteSchema(schemaName)) {
                     schemaNames.add(schemaName);
                 }
             }
@@ -187,7 +187,7 @@ public abstract class BaseJdbcClient
         }
     }
 
-    protected boolean filterSchema(String schemaName)
+    protected boolean filterRemoteSchema(String schemaName)
     {
         return !schemaName.equalsIgnoreCase("information_schema");
     }
@@ -206,17 +206,17 @@ public abstract class BaseJdbcClient
         try (Connection connection = connectionFactory.openConnection(session)) {
             ConnectorIdentity identity = session.getIdentity();
             Optional<String> remoteSchema = schema.map(schemaName -> identifierMapping.toRemoteSchemaName(getRemoteIdentifiers(connection), identity, schemaName));
-            if (remoteSchema.isPresent() && !filterSchema(remoteSchema.get())) {
+            if (remoteSchema.isPresent() && !filterRemoteSchema(remoteSchema.get())) {
                 return ImmutableList.of();
             }
 
             try (ResultSet resultSet = getTables(connection, remoteSchema, Optional.empty())) {
                 ImmutableList.Builder<RelationCommentMetadata> list = ImmutableList.builder();
                 while (resultSet.next()) {
-                    String remoteSchemaFromResultSet = getTableSchemaName(resultSet);
+                    String remoteSchemaFromResultSet = getTableRemoteSchemaName(resultSet);
                     String tableSchema = identifierMapping.fromRemoteSchemaName(remoteSchemaFromResultSet);
                     String tableName = identifierMapping.fromRemoteTableName(remoteSchemaFromResultSet, resultSet.getString("TABLE_NAME"));
-                    if (filterSchema(tableSchema)) {
+                    if (filterRemoteSchema(remoteSchemaFromResultSet)) {
                         list.add(RelationCommentMetadata.forRelation(new SchemaTableName(tableSchema, tableName), getTableComment(resultSet)));
                     }
                 }
@@ -278,7 +278,7 @@ public abstract class BaseJdbcClient
                     ImmutableList.of());
         }
         catch (SQLException e) {
-            throw new TrinoException(JDBC_ERROR, "Failed to get table handle for prepared query. " + firstNonNull(e.getMessage(), e), e);
+            throw new TrinoException(JDBC_ERROR, "Failed to get table handle for prepared query. " + requireNonNullElse(e.getMessage(), e), e);
         }
     }
 
@@ -379,7 +379,7 @@ public abstract class BaseJdbcClient
                 RemoteIdentifiers remoteIdentifiers = getRemoteIdentifiers(connectionFinal);
                 return identifierMapping.toRemoteSchemaName(remoteIdentifiers, session.getIdentity(), name);
             });
-            if (remoteSchema.isPresent() && !filterSchema(remoteSchema.get())) {
+            if (remoteSchema.isPresent() && !filterRemoteSchema(remoteSchema.get())) {
                 return emptyIterator();
             }
 
@@ -387,7 +387,7 @@ public abstract class BaseJdbcClient
             ImmutableSet.Builder<RemoteTableName> visibleTables = ImmutableSet.builder();
             try (ResultSet tablesResultSet = getTables(connection, remoteSchema, Optional.empty())) {
                 while (tablesResultSet.next()) {
-                    if (filterSchema(getTableSchemaName(tablesResultSet))) {
+                    if (filterRemoteSchema(getTableRemoteSchemaName(tablesResultSet))) {
                         visibleTables.add(getRemoteTable(tablesResultSet));
                     }
                 }
@@ -448,7 +448,7 @@ public abstract class BaseJdbcClient
                     try {
                         if (currentTable == null) {
                             currentTable = nextTable;
-                            String remoteSchemaFromResultSet = getTableSchemaName(resultSet);
+                            String remoteSchemaFromResultSet = getTableRemoteSchemaName(resultSet);
                             currentTableVisible = visibleTables.contains(nextTable);
                             if (currentTableVisible) {
                                 currentTableName = new SchemaTableName(
@@ -484,7 +484,7 @@ public abstract class BaseJdbcClient
                     }
                     catch (RuntimeException | SQLException e) {
                         throwIfInstanceOf(e, TrinoException.class);
-                        throw new RuntimeException("Failure when processing column information for table %s: %s".formatted(currentTable, firstNonNull(e.getMessage(), e)), e);
+                        throw new RuntimeException("Failure when processing column information for table %s: %s".formatted(currentTable, requireNonNullElse(e.getMessage(), e)), e);
                     }
                 }
                 if (computedNext == null) {
@@ -1535,7 +1535,7 @@ public abstract class BaseJdbcClient
         return Optional.of(ImmutableList.of("TABLE", "VIEW"));
     }
 
-    protected String getTableSchemaName(ResultSet resultSet)
+    protected String getTableRemoteSchemaName(ResultSet resultSet)
             throws SQLException
     {
         return resultSet.getString("TABLE_SCHEM");
