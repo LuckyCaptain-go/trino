@@ -26,13 +26,13 @@ import io.airlift.tracing.SpanSerialization.SpanSerializer;
 import io.airlift.units.Duration;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Span;
-import io.trino.client.NodeVersion;
 import io.trino.operator.RetryPolicy;
 import io.trino.plugin.base.metrics.DistributionSnapshot;
 import io.trino.plugin.base.metrics.LongCount;
 import io.trino.plugin.base.metrics.TDigestHistogram;
 import io.trino.server.BasicQueryStats;
 import io.trino.server.ResultQueryInfo;
+import io.trino.spi.NodeVersion;
 import io.trino.spi.QueryId;
 import io.trino.spi.TrinoWarning;
 import io.trino.spi.WarningCode;
@@ -196,16 +196,16 @@ public class TestQueryInfo
         assertThat(queryStats.getProgressPercentage()).isEqualTo(basicQueryStats.getProgressPercentage());
         assertThat(queryStats.getRunningPercentage()).isEqualTo(basicQueryStats.getRunningPercentage());
 
-        assertThat(stageInfo.getStageId()).isEqualTo(basicStageInfo.getStageId());
-        assertThat(stageInfo.getState()).isEqualTo(basicStageInfo.getState());
-        assertThat(stageInfo.isCoordinatorOnly()).isEqualTo(basicStageInfo.isCoordinatorOnly());
-        assertThat(stageInfo.getTasks()).isEqualTo(basicStageInfo.getTasks());
-        assertThat(stageInfo.getStageStats().getFailedTasks()).isEqualTo(basicStageInfo.getStageStats().getFailedTasks());
-        assertThat(stageInfo.getStageStats().getTotalDrivers()).isEqualTo(basicStageInfo.getStageStats().getTotalDrivers());
-        assertThat(stageInfo.getStageStats().getQueuedDrivers()).isEqualTo(basicStageInfo.getStageStats().getQueuedDrivers());
+        assertThat(stageInfo.stageId()).isEqualTo(basicStageInfo.getStageId());
+        assertThat(stageInfo.state()).isEqualTo(basicStageInfo.getState());
+        assertThat(stageInfo.coordinatorOnly()).isEqualTo(basicStageInfo.isCoordinatorOnly());
+        assertThat(stageInfo.tasks()).isEqualTo(basicStageInfo.getTasks());
+        assertThat(stageInfo.stageStats().getFailedTasks()).isEqualTo(basicStageInfo.getStageStats().getFailedTasks());
+        assertThat(stageInfo.stageStats().getTotalDrivers()).isEqualTo(basicStageInfo.getStageStats().getTotalDrivers());
+        assertThat(stageInfo.stageStats().getQueuedDrivers()).isEqualTo(basicStageInfo.getStageStats().getQueuedDrivers());
 
-        assertThat(stageInfo.getStageStats().getBlockedDrivers()).isEqualTo(basicStageInfo.getStageStats().getBlockedDrivers());
-        assertThat(stageInfo.getStageStats().getPhysicalWrittenDataSize()).isEqualTo(basicStageInfo.getStageStats().getPhysicalWrittenDataSize());
+        assertThat(stageInfo.stageStats().getBlockedDrivers()).isEqualTo(basicStageInfo.getStageStats().getBlockedDrivers());
+        assertThat(stageInfo.stageStats().getPhysicalWrittenDataSize()).isEqualTo(basicStageInfo.getStageStats().getPhysicalWrittenDataSize());
     }
 
     private static QueryInfo createQueryInfo(Optional<StagesInfo> stagesInfo)

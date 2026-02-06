@@ -93,7 +93,7 @@ public class IcebergConfig
     private boolean queryPartitionFilterRequired;
     private Set<String> queryPartitionFilterRequiredSchemas = ImmutableSet.of();
     private int splitManagerThreads = Math.min(Runtime.getRuntime().availableProcessors() * 2, 32);
-    private int planningThreads = Math.min(Runtime.getRuntime().availableProcessors(), 16);
+    private int planningThreads = Runtime.getRuntime().availableProcessors() * 2;
     private int fileDeleteThreads = Runtime.getRuntime().availableProcessors() * 2;
     private List<String> allowedExtraProperties = ImmutableList.of();
     private boolean incrementalRefreshEnabled = true;
@@ -561,7 +561,7 @@ public class IcebergConfig
     }
 
     @Config("iceberg.file-delete-threads")
-    @ConfigDescription("Number of threads to use for deleting files when running expire_snapshots procedure")
+    @ConfigDescription("Number of threads to use for deleting files when running the `expire_snapshots` or `remove_orphan_files` procedure, or when executing `DROP TABLE` queries")
     public IcebergConfig setFileDeleteThreads(String fileDeleteThreads)
     {
         this.fileDeleteThreads = ThreadCount.valueOf(fileDeleteThreads).getThreadCount();

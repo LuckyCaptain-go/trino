@@ -97,7 +97,7 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 public class MockRemoteTaskFactory
         implements RemoteTaskFactory
 {
-    private static final String TASK_INSTANCE_ID = "task-instance-id";
+    private static final long TASK_INSTANCE_ID = 0x1337;
     private final Executor executor;
     private final ScheduledExecutorService scheduledExecutor;
 
@@ -294,13 +294,13 @@ public class MockRemoteTaskFactory
                     queuedSplitsInfo.getCount(),
                     combinedSplitsInfo.getCount() - queuedSplitsInfo.getCount(),
                     outputBuffer.getStatus(),
-                    stats.getOutputDataSize(),
-                    stats.getWriterInputDataSize(),
-                    stats.getPhysicalWrittenDataSize(),
-                    stats.getMaxWriterCount(),
-                    stats.getUserMemoryReservation(),
-                    stats.getPeakUserMemoryReservation(),
-                    stats.getRevocableMemoryReservation(),
+                    stats.outputDataSize(),
+                    stats.writerInputDataSize(),
+                    stats.physicalWrittenDataSize(),
+                    stats.maxWriterCount(),
+                    stats.userMemoryReservation(),
+                    stats.peakUserMemoryReservation(),
+                    stats.revocableMemoryReservation(),
                     0,
                     new Duration(0, MILLISECONDS),
                     INITIAL_DYNAMIC_FILTERS_VERSION,

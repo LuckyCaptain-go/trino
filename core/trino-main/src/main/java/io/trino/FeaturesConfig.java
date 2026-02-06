@@ -21,8 +21,8 @@ import io.airlift.configuration.DefunctConfig;
 import io.airlift.configuration.LegacyConfig;
 import io.airlift.units.DataSize;
 import io.airlift.units.MaxDataSize;
-import io.trino.execution.ThreadCountParser;
 import io.trino.execution.buffer.CompressionCodec;
+import io.trino.plugin.base.configuration.ThreadCountParser;
 import io.trino.sql.analyzer.RegexLibrary;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
@@ -34,6 +34,7 @@ import java.util.List;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.units.DataSize.Unit.KILOBYTE;
+import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.airlift.units.DataSize.succinctBytes;
 import static io.trino.execution.buffer.CompressionCodec.LZ4;
 import static io.trino.execution.buffer.CompressionCodec.NONE;
@@ -95,8 +96,8 @@ public class FeaturesConfig
 
     private boolean redistributeWrites = true;
     private boolean scaleWriters = true;
-    private DataSize writerScalingMinDataProcessed = DataSize.of(120, DataSize.Unit.MEGABYTE);
-    private DataSize maxMemoryPerPartitionWriter = DataSize.of(256, DataSize.Unit.MEGABYTE);
+    private DataSize writerScalingMinDataProcessed = DataSize.of(120, MEGABYTE);
+    private DataSize maxMemoryPerPartitionWriter = DataSize.of(256, MEGABYTE);
     private DataIntegrityVerification exchangeDataIntegrityVerification = DataIntegrityVerification.ABORT;
     /**
      * default value is overwritten for fault tolerant execution in {@link #applyFaultTolerantExecutionDefaults()}}
@@ -110,7 +111,7 @@ public class FeaturesConfig
     private int re2JDfaRetries = 5;
     private RegexLibrary regexLibrary = JONI;
     private boolean spillEnabled;
-    private DataSize aggregationOperatorUnspillMemoryLimit = DataSize.of(4, DataSize.Unit.MEGABYTE);
+    private DataSize aggregationOperatorUnspillMemoryLimit = DataSize.of(4, MEGABYTE);
     private List<Path> spillerSpillPaths = ImmutableList.of();
     private Integer spillerThreads;
     private double spillMaxUsedSpaceThreshold = 0.9;

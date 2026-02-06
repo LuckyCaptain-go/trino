@@ -1508,6 +1508,10 @@ public abstract class BaseIcebergConnectorTest
                         CROSS JOIN UNNEST (sequence(1, 10_000)) a(i)
                         """.formatted(tableName, values, highValues, lowValues), 30000);
 
+        computeActual("SELECT sort_order_id from \"" + tableName + "$files\"")
+                .getOnlyColumn()
+                .forEach(sortOrderId -> assertThat((Integer) sortOrderId).isEqualTo(1));
+
         assertUpdate("DROP TABLE " + tableName);
     }
 
@@ -1575,13 +1579,16 @@ public abstract class BaseIcebergConnectorTest
             assertUpdate("ALTER TABLE " + table.getName() + " SET PROPERTIES sorted_by = ARRAY['name']");
             assertUpdate(withSmallRowGroups, "INSERT INTO " + table.getName() + " SELECT * FROM nation", 25);
 
-            for (Object filePath : computeActual("SELECT file_path from \"" + table.getName() + "$files\"").getOnlyColumnAsSet()) {
-                String path = (String) filePath;
+            for (MaterializedRow row : computeActual("SELECT file_path, sort_order_id from \"" + table.getName() + "$files\"").getMaterializedRows()) {
+                String path = (String) row.getField(0);
+                int sortOrderId = (Integer) row.getField(1);
                 if (sortedByComment.contains(path)) {
                     assertThat(isFileSorted(path, "comment")).isTrue();
+                    assertThat(sortOrderId).isEqualTo(1);
                 }
                 else {
                     assertThat(isFileSorted(path, "name")).isTrue();
+                    assertThat(sortOrderId).isEqualTo(2);
                 }
             }
             assertQuery("SELECT * FROM " + table.getName(), "SELECT * FROM nation UNION ALL SELECT * FROM nation");
@@ -1598,8 +1605,9 @@ public abstract class BaseIcebergConnectorTest
                 "test_sorting_disabled",
                 "WITH (sorted_by = ARRAY['comment']) AS SELECT * FROM nation WITH NO DATA")) {
             assertUpdate(withSortingDisabled, "INSERT INTO " + table.getName() + " SELECT * FROM nation", 25);
-            for (Object filePath : computeActual("SELECT file_path from \"" + table.getName() + "$files\"").getOnlyColumnAsSet()) {
-                assertThat(isFileSorted((String) filePath, "comment")).isFalse();
+            for (MaterializedRow row : computeActual("SELECT file_path, sort_order_id from \"" + table.getName() + "$files\"").getMaterializedRows()) {
+                assertThat(isFileSorted((String) row.getField(0), "comment")).isFalse();
+                assertThat(((Integer) row.getField(1))).isEqualTo(0);
             }
             assertQuery("SELECT * FROM " + table.getName(), "SELECT * FROM nation");
         }
@@ -1619,8 +1627,9 @@ public abstract class BaseIcebergConnectorTest
             // For optimize we need to set task_min_writer_count to 1, otherwise it will create more than one file.
             assertUpdate(withSingleWriterPerTask(withSmallRowGroups), "ALTER TABLE " + table.getName() + " EXECUTE optimize");
 
-            for (Object filePath : computeActual("SELECT file_path from \"" + table.getName() + "$files\"").getOnlyColumnAsSet()) {
-                assertThat(isFileSorted((String) filePath, "comment")).isTrue();
+            for (MaterializedRow row : computeActual("SELECT file_path, sort_order_id from \"" + table.getName() + "$files\"").getMaterializedRows()) {
+                assertThat(isFileSorted((String) row.getField(0), "comment")).isTrue();
+                assertThat(((Integer) row.getField(1))).isEqualTo(1);
             }
             assertQuery("SELECT * FROM " + table.getName(), "SELECT * FROM nation");
         }
@@ -1641,10 +1650,40 @@ public abstract class BaseIcebergConnectorTest
             assertQuery(
                     "SELECT custkey, name, address, nationkey, phone, acctbal, mktsegment, comment FROM " + table.getName(),
                     "SELECT custkey, name, address, nationkey, phone, acctbal, mktsegment, substring(comment, 2) FROM customer");
-            for (Object filePath : computeActual("SELECT file_path from \"" + table.getName() + "$files\" WHERE content != 1").getOnlyColumnAsSet()) {
-                assertThat(isFileSorted((String) filePath, "comment")).isTrue();
+            for (MaterializedRow row : computeActual("SELECT file_path, sort_order_id from \"" + table.getName() + "$files\" WHERE content != 1").getMaterializedRows()) {
+                assertThat(isFileSorted((String) row.getField(0), "comment")).isTrue();
+                assertThat(((Integer) row.getField(1))).isEqualTo(1);
+            }
+
+            // Verify MERGE INTO maintains sort order
+            assertUpdate(
+                    withSmallRowGroups,
+                    "MERGE INTO " + table.getName() + " t USING (SELECT custkey, comment FROM tpch.tiny.customer WHERE custkey <= 1000) s " +
+                            "ON t.custkey = s.custkey " +
+                            "WHEN MATCHED THEN UPDATE SET comment = s.comment",
+                    1000);
+            for (MaterializedRow row : computeActual("SELECT file_path, sort_order_id from \"" + table.getName() + "$files\" WHERE content != 1").getMaterializedRows()) {
+                assertThat(isFileSorted((String) row.getField(0), "comment")).isTrue();
+                assertThat(((Integer) row.getField(1))).isEqualTo(1);
             }
         }
+    }
+
+    @Test
+    public void testCreateWithSortOrder()
+    {
+        // Verify that CTAS with sorted_by creates sorted files
+        Session withSmallRowGroups = withSmallRowGroups(getSession());
+        String tableName = "test_create_with_sort_order_" + randomNameSuffix();
+        assertUpdate(withSmallRowGroups,
+                "CREATE TABLE " + tableName + " WITH (sorted_by = ARRAY['comment']) AS SELECT * FROM nation",
+                25);
+        for (MaterializedRow row : computeActual("SELECT file_path, sort_order_id from \"" + tableName + "$files\"").getMaterializedRows()) {
+            assertThat(isFileSorted((String) row.getField(0), "comment")).isTrue();
+            assertThat(((Integer) row.getField(1))).isEqualTo(1);
+        }
+        assertQuery("SELECT * FROM " + tableName, "SELECT * FROM nation");
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     protected abstract boolean isFileSorted(String path, String sortColumnName);
@@ -5361,8 +5400,8 @@ public abstract class BaseIcebergConnectorTest
                 .orElseThrow();
         StageId outputStageId = stagesInfo.getOutputStageId();
         StageInfo writerStage = stagesInfo.getSubStages(outputStageId).getFirst();
-        assertThat(PlanNodeSearcher.searchFrom(writerStage.getPlan().getRoot()).whereIsInstanceOfAny(TableWriterNode.class).matches()).isTrue();
-        assertThat(writerStage.getTasks().size()).isEqualTo(1);
+        assertThat(PlanNodeSearcher.searchFrom(writerStage.plan().getRoot()).whereIsInstanceOfAny(TableWriterNode.class).matches()).isTrue();
+        assertThat(writerStage.tasks().size()).isEqualTo(1);
 
         assertUpdate("DROP TABLE IF EXISTS test_max_writer_task_count_insert");
     }
@@ -5799,19 +5838,19 @@ public abstract class BaseIcebergConnectorTest
     public void testTargetMaxFileSize()
     {
         String tableName = "test_default_max_file_size" + randomNameSuffix();
-        @Language("SQL") String createTableSql = format("CREATE TABLE %s AS SELECT * FROM tpch.sf1.lineitem LIMIT 100000", tableName);
+        @Language("SQL") String createTableSql = format("CREATE TABLE %s AS SELECT * FROM tpch.sf1.lineitem LIMIT 200000", tableName);
 
         Session session = Session.builder(getSession())
                 .setSystemProperty("task_min_writer_count", "1")
                 // task scale writers should be disabled since we want to write with a single task writer
                 .setSystemProperty("task_scale_writers_enabled", "false")
                 .build();
-        assertUpdate(session, createTableSql, 100000);
+        assertUpdate(session, createTableSql, 200000);
         List<String> initialFiles = getActiveFiles(tableName);
         assertThat(initialFiles.size()).isLessThanOrEqualTo(3);
         assertUpdate(format("DROP TABLE %s", tableName));
 
-        DataSize maxSize = DataSize.of(40, DataSize.Unit.KILOBYTE);
+        DataSize maxSize = DataSize.of(80, DataSize.Unit.KILOBYTE);
         session = Session.builder(getSession())
                 .setSystemProperty("task_min_writer_count", "1")
                 // task scale writers should be disabled since we want to write with a single task writer
@@ -5819,8 +5858,8 @@ public abstract class BaseIcebergConnectorTest
                 .setCatalogSessionProperty("iceberg", "target_max_file_size", maxSize.toString())
                 .build();
 
-        assertUpdate(session, createTableSql, 100000);
-        assertThat(query(format("SELECT count(*) FROM %s", tableName))).matches("VALUES BIGINT '100000'");
+        assertUpdate(session, createTableSql, 200000);
+        assertThat(query(format("SELECT count(*) FROM %s", tableName))).matches("VALUES BIGINT '200000'");
         List<String> updatedFiles = getActiveFiles(tableName);
         assertThat(updatedFiles.size()).isGreaterThan(10);
 
@@ -5835,19 +5874,19 @@ public abstract class BaseIcebergConnectorTest
     public void testTargetMaxFileSizeOnSortedTable()
     {
         String tableName = "test_default_max_file_size_sorted_" + randomNameSuffix();
-        @Language("SQL") String createTableSql = format("CREATE TABLE %s WITH (sorted_by = ARRAY['shipdate']) AS SELECT * FROM tpch.sf1.lineitem LIMIT 100000", tableName);
+        @Language("SQL") String createTableSql = format("CREATE TABLE %s WITH (sorted_by = ARRAY['shipdate']) AS SELECT * FROM tpch.sf1.lineitem LIMIT 200000", tableName);
 
         Session session = Session.builder(getSession())
                 .setSystemProperty("task_min_writer_count", "1")
                 // task scale writers should be disabled since we want to write with a single task writer
                 .setSystemProperty("task_scale_writers_enabled", "false")
                 .build();
-        assertUpdate(session, createTableSql, 100000);
+        assertUpdate(session, createTableSql, 200000);
         List<String> initialFiles = getActiveFiles(tableName);
         assertThat(initialFiles.size()).isLessThanOrEqualTo(3);
         assertUpdate(format("DROP TABLE %s", tableName));
 
-        DataSize maxSize = DataSize.of(40, DataSize.Unit.KILOBYTE);
+        DataSize maxSize = DataSize.of(50, DataSize.Unit.KILOBYTE);
         session = Session.builder(getSession())
                 .setSystemProperty("task_min_writer_count", "1")
                 // task scale writers should be disabled since we want to write with a single task writer
@@ -5855,8 +5894,8 @@ public abstract class BaseIcebergConnectorTest
                 .setCatalogSessionProperty("iceberg", "target_max_file_size", maxSize.toString())
                 .build();
 
-        assertUpdate(session, createTableSql, 100000);
-        assertThat(query(format("SELECT count(*) FROM %s", tableName))).matches("VALUES BIGINT '100000'");
+        assertUpdate(session, createTableSql, 200000);
+        assertThat(query(format("SELECT count(*) FROM %s", tableName))).matches("VALUES BIGINT '200000'");
         List<String> updatedFiles = getActiveFiles(tableName);
         assertThat(updatedFiles.size()).isGreaterThan(5);
 
@@ -9347,6 +9386,11 @@ public abstract class BaseIcebergConnectorTest
             return Optional.of(setup.withNewValueLiteral("TIMESTAMP '2020-02-12 14:03:00.123000 +00:00'"));
         }
         switch ("%s -> %s".formatted(setup.sourceColumnType(), setup.newColumnType())) {
+            // Iceberg allows updating column types if the update is safe. Safe updates are:
+            // - int to bigint
+            // - float to double
+            // - decimal(P,S) to decimal(P2,S) when P2 > P (scale cannot change)
+            // https://iceberg.apache.org/docs/latest/spark-ddl/#alter-table--alter-column
             case "tinyint -> smallint":
             case "bigint -> integer":
             case "bigint -> smallint":
@@ -9356,16 +9400,12 @@ public abstract class BaseIcebergConnectorTest
             case "varchar -> char(20)":
             case "time(6) -> time(3)":
             case "timestamp(6) -> timestamp(3)":
-            case "array(integer) -> array(bigint)":
-                // Iceberg allows updating column types if the update is safe. Safe updates are:
-                // - int to bigint
-                // - float to double
-                // - decimal(P,S) to decimal(P2,S) when P2 > P (scale cannot change)
-                // https://iceberg.apache.org/docs/latest/spark-ddl/#alter-table--alter-column
+            // Iceberg cannot update map keys
+            case "map(integer, varchar) -> map(bigint, varchar)":
                 return Optional.of(setup.asUnsupported());
 
+            // Iceberg connector ignores the varchar length
             case "varchar(100) -> varchar(50)":
-                // Iceberg connector ignores the varchar length
                 return Optional.empty();
         }
         return Optional.of(setup);
@@ -9376,7 +9416,8 @@ public abstract class BaseIcebergConnectorTest
     {
         assertThat(e).hasMessageMatching(".*(Failed to set column type: Cannot change (column type:|type from .* to )" +
                 "|Time(stamp)? precision \\(3\\) not supported for Iceberg. Use \"time(stamp)?\\(6\\)\" instead" +
-                "|Type not supported for Iceberg: tinyint|smallint|char\\(20\\)).*");
+                "|Type not supported for Iceberg: (tinyint|smallint|char\\(20\\))" +
+                "|Cannot update map keys).*");
     }
 
     @Override
@@ -9387,6 +9428,11 @@ public abstract class BaseIcebergConnectorTest
             return Optional.of(setup.withNewValueLiteral("TIMESTAMP '2020-02-12 14:03:00.123000 +00:00'"));
         }
         switch ("%s -> %s".formatted(setup.sourceColumnType(), setup.newColumnType())) {
+            // Iceberg allows updating column types if the update is safe. Safe updates are:
+            // - int to bigint
+            // - float to double
+            // - decimal(P,S) to decimal(P2,S) when P2 > P (scale cannot change)
+            // https://iceberg.apache.org/docs/latest/spark-ddl/#alter-table--alter-column
             case "tinyint -> smallint":
             case "bigint -> integer":
             case "bigint -> smallint":
@@ -9396,25 +9442,12 @@ public abstract class BaseIcebergConnectorTest
             case "varchar -> char(20)":
             case "time(6) -> time(3)":
             case "timestamp(6) -> timestamp(3)":
-            case "array(integer) -> array(bigint)":
-            case "row(x integer) -> row(\"x\" bigint)":
-            case "row(x integer) -> row(\"y\" integer)":
-            case "row(x integer, y integer) -> row(\"x\" integer, \"z\" integer)":
-            case "row(x integer) -> row(\"x\" integer, \"y\" integer)":
-            case "row(x integer, y integer) -> row(\"x\" integer)":
-            case "row(x integer, y integer) -> row(\"y\" integer, \"x\" integer)":
-            case "row(x integer, y integer) -> row(\"z\" integer, \"y\" integer, \"x\" integer)":
-            case "row(x row(nested integer)) -> row(\"x\" row(\"nested\" bigint))":
-            case "row(x row(a integer, b integer)) -> row(\"x\" row(\"b\" integer, \"a\" integer))":
-                // Iceberg allows updating column types if the update is safe. Safe updates are:
-                // - int to bigint
-                // - float to double
-                // - decimal(P,S) to decimal(P2,S) when P2 > P (scale cannot change)
-                // https://iceberg.apache.org/docs/latest/spark-ddl/#alter-table--alter-column
+            // Iceberg cannot update map keys
+            case "map(integer, varchar) -> map(bigint, varchar)":
                 return Optional.of(setup.asUnsupported());
 
+            // Iceberg connector ignores the varchar length
             case "varchar(100) -> varchar(50)":
-                // Iceberg connector ignores the varchar length
                 return Optional.empty();
         }
         return Optional.of(setup);
@@ -9425,8 +9458,8 @@ public abstract class BaseIcebergConnectorTest
     {
         assertThat(e).hasMessageMatching(".*(Failed to set field type: Cannot change (column type:|type from .* to )" +
                 "|Time(stamp)? precision \\(3\\) not supported for Iceberg. Use \"time(stamp)?\\(6\\)\" instead" +
-                "|Type not supported for Iceberg: tinyint|smallint|char\\(20\\)" +
-                "|Iceberg doesn't support changing field type (from|to) non-primitive types).*");
+                "|Type not supported for Iceberg: (tinyint|smallint|char\\(20\\))" +
+                "|Cannot update map keys).*");
     }
 
     @Override

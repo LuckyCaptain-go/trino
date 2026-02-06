@@ -14,7 +14,6 @@
 package io.trino.server;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.hash.Hashing;
 import com.google.inject.Inject;
 import io.airlift.http.client.HttpRequestFilter;
 import io.airlift.http.client.Request;
@@ -28,8 +27,11 @@ import io.trino.spi.security.Identity;
 import jakarta.ws.rs.container.ContainerRequestContext;
 import jakarta.ws.rs.core.Response;
 
+import javax.crypto.KDF;
 import javax.crypto.SecretKey;
+import javax.crypto.spec.HKDFParameterSpec;
 
+import java.security.spec.AlgorithmParameterSpec;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.util.Date;
@@ -38,7 +40,6 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 import static io.airlift.http.client.Request.Builder.fromRequest;
-import static io.jsonwebtoken.security.Keys.hmacShaKeyFor;
 import static io.trino.server.ServletSecurityUtils.setAuthenticatedIdentity;
 import static io.trino.server.security.jwt.JwtUtil.newJwtBuilder;
 import static io.trino.server.security.jwt.JwtUtil.newJwtParserBuilder;
@@ -93,7 +94,7 @@ public class InternalAuthenticationManager
         requireNonNull(sharedSecret, "sharedSecret is null");
         requireNonNull(nodeId, "nodeId is null");
         this.startupStatus = requireNonNull(startupStatus, "startupStatus is null");
-        this.hmac = hmacShaKeyFor(Hashing.sha256().hashString(sharedSecret, UTF_8).asBytes());
+        this.hmac = expandKey(sharedSecret);
         this.nodeId = nodeId;
         this.jwtParser = newJwtParserBuilder().verifyWith(hmac).build();
         this.currentToken = new AtomicReference<>(createJwt());
@@ -187,6 +188,23 @@ public class InternalAuthenticationManager
         public boolean isExpired()
         {
             return Instant.now().isAfter(expiration);
+        }
+    }
+
+    private static SecretKey expandKey(String sharedSecret)
+    {
+        try {
+            KDF hkdf = KDF.getInstance("HKDF-SHA256");
+
+            AlgorithmParameterSpec params =
+                    HKDFParameterSpec.ofExtract()
+                            .addIKM(sharedSecret.getBytes(UTF_8))
+                            .thenExpand("internal-communication".getBytes(UTF_8), 32);
+
+            return hkdf.deriveKey("HmacSHA256", params);
+        }
+        catch (Exception e) {
+            throw new RuntimeException("Could not expand internal communication shared key using HKDF-SHA256", e);
         }
     }
 }

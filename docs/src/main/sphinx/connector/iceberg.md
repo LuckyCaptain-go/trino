@@ -243,12 +243,16 @@ implementation is used:
 * - `iceberg.split-manager-threads`
   -  Number of threads to use for generating splits.
   -  Double the number of processors on the coordinator node.
+* - `iceberg.planning-threads`
+  -  Number of threads to use for reading manifests during planning.
+  -  Double the number of processors on the coordinator node.
 * - `iceberg.metadata.parallelism`
   - Number of threads used for retrieving metadata. Currently, only table loading 
     is parallelized.
   - `8`
 * - `iceberg.file-delete-threads`
-  - Number of threads to use for deleting files when running `expire_snapshots` procedure.
+  - Number of threads to use for deleting files when running the `expire_snapshots`
+    or `remove_orphan_files` procedure, or when executing `DROP TABLE` queries.
   - Double the number of processors on the coordinator node.
 * - `iceberg.bucket-execution`
   - Enable bucket-aware execution. This allows the engine to use physical
@@ -889,6 +893,15 @@ the maximum size of manifest files produced by this procedure.
 
 ```sql
 ALTER TABLE test_table EXECUTE optimize_manifests;
+```
+
+```text
+metric_name                      | metric_value
+---------------------------------+--------------
+rewritten_manifests_count        |            2
+added_manifests_count            |            1
+kept_manifests_count             |            1
+processed_manifest_entries_count |            2
 ```
 
 (iceberg-expire-snapshots)=
@@ -2245,7 +2258,7 @@ Additionally, you can use the following catalog configuration properties:
 * - `fs.memory-cache.max-size`
   - The maximum total [data size](prop-type-data-size) of the cache. When
     raising this value, keep in mind that the coordinator memory is used.
-    Defaults to `200MB`.
+    Defaults to 2% of maximum heap size on the node.
 * - `fs.memory-cache.max-content-length`
   - The maximum file size that can be cached. Defaults to `15MB`.
  :::

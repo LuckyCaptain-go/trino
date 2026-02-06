@@ -20,7 +20,6 @@ import com.google.common.collect.Multimap;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.opentelemetry.api.trace.Span;
-import io.trino.client.NodeVersion;
 import io.trino.cost.StatsAndCosts;
 import io.trino.execution.ExecutionFailureInfo;
 import io.trino.execution.NodeTaskMap;
@@ -34,6 +33,7 @@ import io.trino.execution.buffer.OutputBufferStatus;
 import io.trino.metadata.Split;
 import io.trino.node.InternalNode;
 import io.trino.node.TestingInternalNodeManager;
+import io.trino.spi.NodeVersion;
 import io.trino.spi.QueryId;
 import io.trino.spi.metrics.Metrics;
 import io.trino.spi.predicate.TupleDomain;
@@ -231,7 +231,7 @@ public class TestScaledWriterScheduler
     {
         return new TaskStatus(
                 new TaskId(new StageId(new QueryId("query_id"), 0), 0, 0),
-                "task-instance-id",
+                0,
                 0,
                 TaskState.RUNNING,
                 URI.create("fake://task/" + "taskId" + "/node/some_node"),

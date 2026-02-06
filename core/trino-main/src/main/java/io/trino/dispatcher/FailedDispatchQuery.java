@@ -20,7 +20,6 @@ import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.Session;
-import io.trino.client.NodeVersion;
 import io.trino.execution.ExecutionFailureInfo;
 import io.trino.execution.QueryInfo;
 import io.trino.execution.QueryState;
@@ -29,6 +28,7 @@ import io.trino.execution.StateMachine.StateChangeListener;
 import io.trino.operator.RetryPolicy;
 import io.trino.server.BasicQueryInfo;
 import io.trino.spi.ErrorCode;
+import io.trino.spi.NodeVersion;
 import io.trino.spi.QueryId;
 import io.trino.spi.resourcegroups.ResourceGroupId;
 
@@ -246,7 +246,7 @@ public class FailedDispatchQuery
                 null,
                 Optional.empty(),
                 failureCause,
-                failureCause.getErrorCode(),
+                failureCause.errorCode(),
                 ImmutableList.of(),
                 ImmutableSet.of(),
                 Optional.empty(),
@@ -338,6 +338,7 @@ public class FailedDispatchQuery
                 DataSize.ofBytes(0),
                 ImmutableList.of(),
                 DynamicFiltersStats.EMPTY,
+                ImmutableMap.of(),
                 ImmutableMap.of(),
                 ImmutableList.of(),
                 ImmutableList.of());

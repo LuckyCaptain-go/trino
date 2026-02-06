@@ -27,23 +27,23 @@ import io.trino.type.BlockTypeOperators;
 
 import java.util.Set;
 
-import static io.trino.client.NodeVersion.UNKNOWN;
 import static io.trino.metadata.CatalogManager.NO_CATALOGS;
+import static io.trino.spi.NodeVersion.UNKNOWN;
 import static io.trino.testing.PlanTester.TESTING_BLOCK_ENCODING_MANAGER;
 import static io.trino.transaction.InMemoryTransactionManager.createTestTransactionManager;
 import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 import static java.util.Objects.requireNonNull;
 
-public final class TestMetadataManager
+public final class TestingMetadataManager
 {
-    private TestMetadataManager() {}
+    private TestingMetadataManager() {}
 
-    public static MetadataManager createTestMetadataManager()
+    public static MetadataManager createTestingMetadataManager()
     {
         return builder().build();
     }
 
-    public static TestMetadataManager.Builder builder()
+    public static TestingMetadataManager.Builder builder()
     {
         return new Builder();
     }

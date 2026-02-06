@@ -70,7 +70,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { java-version: 25.0.1, cache: 'true', cleanup-node: true }
+          - { java-version: 25.0.2, cache: 'true', cleanup-node: true }
           - { java-version: 26-ea, cache: 'restore', cleanup-node: true }
     timeout-minutes: 45
     steps:
@@ -208,7 +208,7 @@ jobs:
         with:
           cache: restore
           cleanup-node: true # fix "No space left on device" error
-          java-version: 25.0.1
+          java-version: 25.0.2
       - name: Maven Install
         run: |
           # build everything to make sure dependencies of impacted modules are present
@@ -503,7 +503,6 @@ jobs:
             - { modules: plugin/trino-mariadb }
             - { modules: plugin/trino-mongodb }
             - { modules: plugin/trino-mysql }
-            - { modules: plugin/trino-openlineage }
             - { modules: plugin/trino-opensearch }
             - { modules: plugin/trino-oracle }
             - { modules: plugin/trino-pinot }
@@ -549,7 +548,7 @@ jobs:
         with:
           cache: restore
           cleanup-node: ${{ format('{0}', matrix.modules == 'plugin/trino-singlestore' || matrix.modules == 'plugin/trino-exasol' || matrix.modules == 'plugin/trino-oracle' || matrix.modules == 'plugin/trino-iceberg') }}
-          java-version: ${{ matrix.jdk != '' && matrix.jdk || '25.0.1' }}
+          java-version: ${{ matrix.jdk != '' && matrix.jdk || '25.0.2' }}
       - name: Maven Install
         run: |
           export MAVEN_OPTS="${MAVEN_INSTALL_OPTS}"
@@ -907,7 +906,6 @@ jobs:
             - suite-7-non-generic
             - suite-hive-transactional
             - suite-azure
-            - suite-delta-lake-databricks122
             - suite-delta-lake-databricks133
             - suite-delta-lake-databricks143
             - suite-delta-lake-databricks154
@@ -949,9 +947,6 @@ jobs:
               ignore exclusion if: >-
                 ${{ env.CI_SKIP_SECRETS_PRESENCE_CHECKS != '' || secrets.GCP_CREDENTIALS_KEY != '' }}
 
-            - suite: suite-delta-lake-databricks122
-              ignore exclusion if: >-
-                ${{ env.CI_SKIP_SECRETS_PRESENCE_CHECKS != '' || secrets.DATABRICKS_TOKEN != '' }}
             - suite: suite-delta-lake-databricks133
               ignore exclusion if: >-
                 ${{ env.CI_SKIP_SECRETS_PRESENCE_CHECKS != '' || secrets.DATABRICKS_TOKEN != '' }}
@@ -1011,7 +1006,6 @@ jobs:
           AWS_REGION: ""
           TRINO_AWS_ACCESS_KEY_ID: ""
           TRINO_AWS_SECRET_ACCESS_KEY: ""
-          DATABRICKS_122_JDBC_URL: ""
           DATABRICKS_133_JDBC_URL: ""
           DATABRICKS_143_JDBC_URL: ""
           DATABRICKS_154_JDBC_URL: ""
@@ -1084,7 +1078,6 @@ jobs:
           AWS_REGION: ${{ vars.TRINO_AWS_REGION }}
           TRINO_AWS_ACCESS_KEY_ID: ${{ vars.TRINO_AWS_ACCESS_KEY_ID }}
           TRINO_AWS_SECRET_ACCESS_KEY: ${{ secrets.TRINO_AWS_SECRET_ACCESS_KEY }}
-          DATABRICKS_122_JDBC_URL: ${{ vars.DATABRICKS_122_JDBC_URL }}
           DATABRICKS_133_JDBC_URL: ${{ vars.DATABRICKS_133_JDBC_URL }}
           DATABRICKS_143_JDBC_URL: ${{ vars.DATABRICKS_143_JDBC_URL }}
           DATABRICKS_154_JDBC_URL: ${{ vars.DATABRICKS_154_JDBC_URL }}
