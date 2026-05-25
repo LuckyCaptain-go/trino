@@ -49,8 +49,8 @@ import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static com.google.common.util.concurrent.MoreExecutors.newDirectExecutorService;
 import static io.airlift.json.JsonCodec.jsonCodec;
 import static io.airlift.units.Duration.ZERO;
-import static io.trino.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
-import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_STATS;
+import static io.trino.hdfs.HdfsTestUtils.HDFS_ENVIRONMENT;
+import static io.trino.hdfs.HdfsTestUtils.HDFS_FILE_SYSTEM_STATS;
 import static io.trino.plugin.iceberg.IcebergTestUtils.FILE_IO_FACTORY;
 import static io.trino.plugin.iceberg.IcebergTestUtils.TABLE_STATISTICS_READER;
 import static io.trino.plugin.iceberg.delete.DeletionVectorWriter.UNSUPPORTED_DELETION_VECTOR_WRITER;
@@ -154,7 +154,10 @@ public class TestTrinoNessieCatalog
         String namespace = "test_default_location_" + randomNameSuffix();
         String table = "tableName";
         SchemaTableName schemaTableName = new SchemaTableName(namespace, table);
-        catalogWithDefaultLocation.createNamespace(SESSION, namespace, ImmutableMap.of(),
+        catalogWithDefaultLocation.createNamespace(
+                SESSION,
+                namespace,
+                ImmutableMap.of(),
                 new TrinoPrincipal(PrincipalType.USER, SESSION.getUser()));
         try {
             File expectedSchemaDirectory = new File(tmpDirectory.toFile(), namespace);
@@ -201,7 +204,7 @@ public class TestTrinoNessieCatalog
                     PLANNER_CONTEXT.getTypeManager(),
                     jsonCodec(CommitTaskData.class),
                     catalog,
-                    (connectorIdentity, fileIoProperties) -> {
+                    (_, _) -> {
                         throw new UnsupportedOperationException();
                     },
                     TABLE_STATISTICS_READER,

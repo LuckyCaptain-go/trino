@@ -29,6 +29,7 @@ import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
 import io.trino.spi.expression.ConnectorExpression;
+import io.trino.spi.expression.Constant;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.sql.PlannerContext;
@@ -39,6 +40,7 @@ import io.trino.sql.planner.ConnectorExpressionTranslator.ConnectorExpressionTra
 import io.trino.sql.planner.DomainTranslator;
 import io.trino.sql.planner.LayoutConstraintEvaluator;
 import io.trino.sql.planner.Symbol;
+import io.trino.sql.planner.SymbolAllocator;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.PlanNode;
@@ -48,6 +50,7 @@ import io.trino.sql.planner.plan.ValuesNode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
@@ -60,7 +63,6 @@ import static io.trino.matching.Capture.newCapture;
 import static io.trino.sql.DynamicFilters.isDynamicFilter;
 import static io.trino.sql.ir.IrUtils.combineConjuncts;
 import static io.trino.sql.ir.IrUtils.extractConjuncts;
-import static io.trino.sql.ir.optimizer.IrExpressionOptimizer.newOptimizer;
 import static io.trino.sql.planner.DeterminismEvaluator.isDeterministic;
 import static io.trino.sql.planner.iterative.rule.Rules.deriveTableStatisticsForPushdown;
 import static io.trino.sql.planner.plan.Patterns.filter;
@@ -113,7 +115,8 @@ public class PushPredicateIntoTableScan
                 pruneWithPredicateExpression,
                 context.getSession(),
                 plannerContext,
-                context.getStatsProvider());
+                context.getStatsProvider(),
+                context.getSymbolAllocator());
 
         if (rewritten.isEmpty() || arePlansSame(filterNode, tableScan, rewritten.get())) {
             return Result.empty();
@@ -146,7 +149,8 @@ public class PushPredicateIntoTableScan
             boolean pruneWithPredicateExpression,
             Session session,
             PlannerContext plannerContext,
-            StatsProvider statsProvider)
+            StatsProvider statsProvider,
+            SymbolAllocator symbolAllocator)
     {
         if (!isAllowPushdownIntoConnectors(session)) {
             return Optional.empty();
@@ -168,7 +172,7 @@ public class PushPredicateIntoTableScan
                 decomposedPredicate.getRemainingExpression());
         Map<String, ColumnHandle> connectorExpressionAssignments = node.getAssignments()
                 .entrySet().stream()
-                .collect(toImmutableMap(entry -> entry.getKey().name(), Map.Entry::getValue));
+                .collect(toImmutableMap(entry -> entry.getKey().name(), Entry::getValue));
 
         Map<ColumnHandle, Symbol> assignments = ImmutableBiMap.copyOf(node.getAssignments()).inverse();
 
@@ -195,7 +199,7 @@ public class PushPredicateIntoTableScan
         // check if new domain is wider than domain already provided by table scan
         if (constraint.predicate().isEmpty() &&
                 // TODO do we need to track enforced ConnectorExpression in TableScanNode?
-                io.trino.spi.expression.Constant.TRUE.equals(expressionTranslation.connectorExpression()) &&
+                Constant.TRUE.equals(expressionTranslation.connectorExpression()) &&
                 newDomain.contains(node.getEnforcedConstraint())) {
             Expression resultingPredicate = createResultingPredicate(
                     plannerContext,
@@ -258,9 +262,10 @@ public class PushPredicateIntoTableScan
             Map<String, Symbol> variableMappings = assignments.values().stream()
                     .collect(toImmutableMap(Symbol::name, Function.identity()));
             Expression translatedExpression = ConnectorExpressionTranslator.translate(session, remainingConnectorExpression.get(), plannerContext, variableMappings);
+            translatedExpression = LambdaCaptureDesugaringRewriter.rewrite(translatedExpression, symbolAllocator);
             // ConnectorExpressionTranslator may or may not preserve optimized form of expressions during round-trip. Avoid potential optimizer loop
             // by ensuring expression is optimized.
-            translatedExpression = newOptimizer(plannerContext).process(translatedExpression, session, ImmutableMap.of()).orElse(translatedExpression);
+            translatedExpression = plannerContext.getExpressionOptimizer().process(translatedExpression, session, ImmutableMap.of()).orElse(translatedExpression);
             remainingDecomposedPredicate = combineConjuncts(translatedExpression, expressionTranslation.remainingExpression());
         }
 
@@ -344,7 +349,7 @@ public class PushPredicateIntoTableScan
 
         // Make sure we produce an expression whose terms are consistent with the canonical form used in other optimizations
         // Otherwise, we'll end up ping-ponging among rules
-        expression = SimplifyExpressions.rewrite(expression, session, newOptimizer(plannerContext));
+        expression = SimplifyExpressions.rewrite(expression, session, plannerContext.getExpressionOptimizer());
 
         return expression;
     }
@@ -364,7 +369,7 @@ public class PushPredicateIntoTableScan
         Map<ColumnHandle, Domain> predicateDomains = predicate.getDomains().get();
         Map<ColumnHandle, Domain> unenforcedDomains = unenforced.getDomains().get();
         ImmutableMap.Builder<ColumnHandle, Domain> enforcedDomainsBuilder = ImmutableMap.builder();
-        for (Map.Entry<ColumnHandle, Domain> entry : predicateDomains.entrySet()) {
+        for (Entry<ColumnHandle, Domain> entry : predicateDomains.entrySet()) {
             ColumnHandle predicateColumnHandle = entry.getKey();
             Domain predicateDomain = entry.getValue();
             if (unenforcedDomains.containsKey(predicateColumnHandle)) {

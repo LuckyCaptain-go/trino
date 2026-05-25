@@ -46,6 +46,7 @@ import io.trino.metadata.Split;
 import io.trino.node.InternalNode;
 import io.trino.operator.TaskContext;
 import io.trino.operator.TaskStats;
+import io.trino.spi.connector.ConnectorTableCredentials;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spiller.SpillSpaceTracker;
 import io.trino.sql.planner.Partitioning;
@@ -66,6 +67,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -144,6 +146,7 @@ public class MockRemoteTaskFactory
                 newNode,
                 false,
                 testFragment,
+                ImmutableMap.of(),
                 initialSplits.build(),
                 PipelinedOutputBuffers.createInitial(BROADCAST),
                 partitionedSplitCountTracker,
@@ -160,6 +163,7 @@ public class MockRemoteTaskFactory
             InternalNode node,
             boolean speculative,
             PlanFragment fragment,
+            Map<PlanNodeId, ConnectorTableCredentials> tableCredentials,
             Multimap<PlanNodeId, Split> initialSplits,
             OutputBuffers outputBuffers,
             PartitionedSplitCountTracker partitionedSplitCountTracker,
@@ -215,7 +219,8 @@ public class MockRemoteTaskFactory
 
             MemoryPool memoryPool = new MemoryPool(DataSize.of(1, GIGABYTE));
             SpillSpaceTracker spillSpaceTracker = new SpillSpaceTracker(DataSize.of(1, GIGABYTE));
-            QueryContext queryContext = new QueryContext(taskId.queryId(),
+            QueryContext queryContext = new QueryContext(
+                    taskId.queryId(),
                     DataSize.of(1, MEGABYTE),
                     memoryPool,
                     new TestingGcMonitor(),
@@ -224,7 +229,7 @@ public class MockRemoteTaskFactory
                     scheduledExecutor,
                     DataSize.of(1, MEGABYTE),
                     spillSpaceTracker);
-            this.taskContext = queryContext.addTaskContext(taskStateMachine, TEST_SESSION, () -> {}, true, true);
+            this.taskContext = queryContext.addTaskContext(taskStateMachine, ImmutableMap.of(), TEST_SESSION, () -> {}, true, true);
 
             this.location = URI.create("fake://task/" + taskId);
 
@@ -283,7 +288,8 @@ public class MockRemoteTaskFactory
             TaskStats stats = taskContext.getTaskStats();
             PartitionedSplitsInfo combinedSplitsInfo = getPartitionedSplitsInfo();
             PartitionedSplitsInfo queuedSplitsInfo = getQueuedPartitionedSplitsInfo();
-            return new TaskStatus(taskStateMachine.getTaskId(),
+            return new TaskStatus(
+                    taskStateMachine.getTaskId(),
                     TASK_INSTANCE_ID,
                     nextTaskInfoVersion.get(),
                     state,
@@ -327,12 +333,12 @@ public class MockRemoteTaskFactory
 
         public synchronized void finishSplits(int splits)
         {
-            List<Map.Entry<PlanNodeId, Split>> toRemove = new ArrayList<>();
-            Iterator<Map.Entry<PlanNodeId, Split>> iterator = this.splits.entries().iterator();
+            List<Entry<PlanNodeId, Split>> toRemove = new ArrayList<>();
+            Iterator<Entry<PlanNodeId, Split>> iterator = this.splits.entries().iterator();
             while (toRemove.size() < splits && iterator.hasNext()) {
                 toRemove.add(iterator.next());
             }
-            for (Map.Entry<PlanNodeId, Split> entry : toRemove) {
+            for (Entry<PlanNodeId, Split> entry : toRemove) {
                 this.splits.remove(entry.getKey(), entry.getValue());
             }
             updateSplitQueueSpace();
@@ -422,7 +428,7 @@ public class MockRemoteTaskFactory
         @Override
         public void addStateChangeListener(StateChangeListener<TaskStatus> stateChangeListener)
         {
-            taskStateMachine.addStateChangeListener(newValue -> stateChangeListener.stateChanged(getTaskStatus()));
+            taskStateMachine.addStateChangeListener(_ -> stateChangeListener.stateChanged(getTaskStatus()));
         }
 
         @Override

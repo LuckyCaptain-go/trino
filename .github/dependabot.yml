@@ -13,6 +13,11 @@ updates:
     schedule:
       interval: "daily"
     open-pull-requests-limit: 10
+    groups:
+      airlift:
+        patterns:
+          - "io.airlift:airbase"
+          - "io.airlift:bom"
     cooldown:
       # Apply 7 day cooldown to avoid updating dependencies right away. This reduces the opportunity window
       # when supply chain is compromised. This doesn't apply to the dependencies that we own and release.
@@ -21,5 +26,23 @@ updates:
         - io.airlift:*
         - io.trino:*
     ignore:
-      # Airbase and Airlift are best updated together. Update Airbase only when updating Airlift.
-      - dependency-name: "io.airlift:airbase"
+      # TODO remove once https://github.com/aws/amazon-redshift-jdbc-driver/issues/148 has been addressed
+      - dependency-name: "com.amazon.redshift:redshift-jdbc42"
+      # TODO remove once https://github.com/jline/jline3/issues/1879 has been addressed
+      - dependency-name: "org.jline:jline-*"
+  - package-ecosystem: "npm"
+    directory: "/core/trino-web-ui/src/main/resources/webapp-preview"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    allow:
+      - dependency-type: "all"
+    ignore:
+      # Ignore major updates for all dependencies; allow only minor/patch updates.
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+    cooldown:
+      # Apply 7 day cooldown to avoid updating dependencies right away. This reduces the opportunity window
+      # when supply chain is compromised.
+      default-days: 7

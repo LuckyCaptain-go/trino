@@ -1319,17 +1319,12 @@ public class PipelinedQueryScheduler
                         schedulerStats.getSplitsScheduledPerIteration().add(result.getSplitsScheduled());
                         if (result.getBlockedReason().isPresent()) {
                             switch (result.getBlockedReason().get()) {
-                                case WRITER_SCALING:
+                                case WRITER_SCALING -> {
                                     // no-op
-                                    break;
-                                case WAITING_FOR_SOURCE:
-                                    schedulerStats.getWaitingForSource().update(1);
-                                    break;
-                                case SPLIT_QUEUES_FULL:
-                                    schedulerStats.getSplitQueuesFull().update(1);
-                                    break;
-                                default:
-                                    throw new UnsupportedOperationException("Unknown blocked reason: " + result.getBlockedReason().get());
+                                }
+                                case WAITING_FOR_SOURCE -> schedulerStats.getWaitingForSource().update(1);
+                                case SPLIT_QUEUES_FULL -> schedulerStats.getSplitQueuesFull().update(1);
+                                default -> throw new UnsupportedOperationException("Unknown blocked reason: " + result.getBlockedReason().get());
                             }
                         }
                     }
@@ -1593,8 +1588,7 @@ public class PipelinedQueryScheduler
     }
 
     private sealed interface BucketToPartitionKey
-            permits ConstantKey, PartitioningKey
-    {}
+            permits ConstantKey, PartitioningKey {}
 
     enum ConstantKey
             implements BucketToPartitionKey

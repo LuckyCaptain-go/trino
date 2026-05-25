@@ -46,6 +46,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
@@ -118,7 +119,9 @@ public class FunctionResolver
                 session,
                 name,
                 parameterTypes,
-                catalogSchemaFunctionName -> metadata.getFunctions(session, catalogSchemaFunctionName),
+                catalogSchemaFunctionName -> filterCandidates(
+                        metadata.getFunctions(session, catalogSchemaFunctionName),
+                        candidate -> candidate.functionMetadata().getReceiverType().isEmpty()),
                 accessControl);
 
         FunctionMetadata functionMetadata = catalogFunctionBinding.boundFunctionMetadata();
@@ -127,6 +130,69 @@ public class FunctionResolver
         }
 
         return resolve(session, catalogFunctionBinding, accessControl);
+    }
+
+    public ResolvedFunction resolveStaticMethod(
+            Session session,
+            TypeSignature receiverType,
+            QualifiedName methodName,
+            List<TypeSignatureProvider> parameterTypes,
+            AccessControl accessControl)
+    {
+        String receiver = receiverType.getBase();
+        CatalogFunctionBinding catalogFunctionBinding = bindFunction(
+                session,
+                methodName,
+                parameterTypes,
+                catalogSchemaFunctionName -> filterCandidates(
+                        metadata.getFunctions(session, catalogSchemaFunctionName),
+                        candidate -> !candidate.functionMetadata().isInstanceMethod()
+                                && candidate.functionMetadata().getReceiverType()
+                                .map(TypeSignature::getBase).equals(Optional.of(receiver))),
+                accessControl);
+
+        FunctionMetadata functionMetadata = catalogFunctionBinding.boundFunctionMetadata();
+        if (functionMetadata.isDeprecated()) {
+            warningCollector.add(new TrinoWarning(DEPRECATED_FUNCTION, "Use of deprecated function: %s::%s: %s".formatted(receiverType, methodName, functionMetadata.getDescription())));
+        }
+
+        return resolve(session, catalogFunctionBinding, accessControl);
+    }
+
+    public ResolvedFunction resolveInstanceMethod(
+            Session session,
+            TypeSignature receiverType,
+            QualifiedName methodName,
+            List<TypeSignatureProvider> parameterTypes,
+            AccessControl accessControl)
+    {
+        String receiver = receiverType.getBase();
+        CatalogFunctionBinding catalogFunctionBinding = bindFunction(
+                session,
+                methodName,
+                parameterTypes,
+                catalogSchemaFunctionName -> filterCandidates(
+                        metadata.getFunctions(session, catalogSchemaFunctionName),
+                        candidate -> candidate.functionMetadata().isInstanceMethod()
+                                && candidate.functionMetadata().getReceiverType()
+                                .map(TypeSignature::getBase).equals(Optional.of(receiver))),
+                accessControl);
+
+        FunctionMetadata functionMetadata = catalogFunctionBinding.boundFunctionMetadata();
+        if (functionMetadata.isDeprecated()) {
+            warningCollector.add(new TrinoWarning(DEPRECATED_FUNCTION, "Use of deprecated function: %s.%s: %s".formatted(receiverType, methodName, functionMetadata.getDescription())));
+        }
+
+        return resolve(session, catalogFunctionBinding, accessControl);
+    }
+
+    private static Collection<CatalogFunctionMetadata> filterCandidates(
+            Collection<CatalogFunctionMetadata> candidates,
+            Predicate<CatalogFunctionMetadata> predicate)
+    {
+        return candidates.stream()
+                .filter(predicate)
+                .collect(toImmutableList());
     }
 
     private ResolvedFunction resolve(Session session, CatalogFunctionBinding functionBinding, AccessControl accessControl)
@@ -143,6 +209,7 @@ public class FunctionResolver
                     resolvedFunctionId,
                     functionBinding.boundFunctionMetadata().getKind(),
                     functionBinding.boundFunctionMetadata().isDeterministic(),
+                    functionBinding.boundFunctionMetadata().isNeverFails(),
                     functionBinding.boundFunctionMetadata().getFunctionNullability(),
                     ImmutableMap.of(),
                     ImmutableSet.of());
@@ -209,7 +276,7 @@ public class FunctionResolver
     {
         Map<TypeSignature, Type> dependentTypes = dependencies.getTypeDependencies().stream()
                 .map(typeSignature -> applyBoundVariables(typeSignature, functionBinding.variables()))
-                .collect(toImmutableMap(Function.identity(), typeManager::getType, (left, right) -> left));
+                .collect(toImmutableMap(Function.identity(), typeManager::getType, (left, _) -> left));
 
         ImmutableSet.Builder<ResolvedFunction> functions = ImmutableSet.builder();
         for (FunctionDependency functionDependency : dependencies.getFunctionDependencies()) {
@@ -259,6 +326,7 @@ public class FunctionResolver
                 functionBinding.getFunctionId(),
                 functionMetadata.getKind(),
                 functionMetadata.isDeterministic(),
+                functionMetadata.isNeverFails(),
                 functionMetadata.getFunctionNullability(),
                 dependentTypes,
                 functions.build());
@@ -297,6 +365,6 @@ public class FunctionResolver
         }
         return accessControl.canExecuteFunction(
                 SecurityContext.of(session),
-                new QualifiedObjectName(functionName.getCatalogName(), functionName.getSchemaName(), functionName.getFunctionName()));
+                new QualifiedObjectName(functionName.catalogName(), functionName.schemaName(), functionName.functionName()));
     }
 }

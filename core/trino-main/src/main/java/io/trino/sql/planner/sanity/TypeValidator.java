@@ -17,6 +17,7 @@ import com.google.common.collect.ListMultimap;
 import io.trino.Session;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.spi.function.BoundSignature;
+import io.trino.spi.type.FunctionType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
@@ -30,11 +31,11 @@ import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.UnionNode;
 import io.trino.sql.planner.plan.WindowNode;
-import io.trino.type.FunctionType;
 import io.trino.type.UnknownType;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
@@ -45,7 +46,8 @@ public final class TypeValidator
         implements PlanSanityChecker.Checker
 {
     @Override
-    public void validate(PlanNode plan,
+    public void validate(
+            PlanNode plan,
             Session session,
             PlannerContext plannerContext,
             WarningCollector warningCollector)
@@ -63,7 +65,7 @@ public final class TypeValidator
 
             AggregationNode.Step step = node.getStep();
 
-            for (Map.Entry<Symbol, Aggregation> entry : node.getAggregations().entrySet()) {
+            for (Entry<Symbol, Aggregation> entry : node.getAggregations().entrySet()) {
                 Symbol symbol = entry.getKey();
                 Aggregation aggregation = entry.getValue();
                 switch (step) {
@@ -96,7 +98,7 @@ public final class TypeValidator
         {
             visitPlan(node, context);
 
-            for (Map.Entry<Symbol, Expression> entry : node.getAssignments().entrySet()) {
+            for (Entry<Symbol, Expression> entry : node.getAssignments().entrySet()) {
                 Type expectedType = entry.getKey().type();
                 if (entry.getValue() instanceof Reference reference) {
                     Symbol symbol = Symbol.from(reference);

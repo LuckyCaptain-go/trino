@@ -16,11 +16,13 @@ package io.trino.spi.function;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.errorprone.annotations.DoNotCall;
+import io.trino.spi.type.TypeSignature;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import static io.trino.spi.function.FunctionKind.AGGREGATE;
@@ -41,9 +43,12 @@ public class FunctionMetadata
     private final FunctionNullability functionNullability;
     private final boolean hidden;
     private final boolean deterministic;
+    private final boolean neverFails;
     private final String description;
     private final FunctionKind kind;
     private final boolean deprecated;
+    private final Optional<TypeSignature> receiverType;
+    private final boolean instanceMethod;
 
     private FunctionMetadata(
             FunctionId functionId,
@@ -53,9 +58,12 @@ public class FunctionMetadata
             FunctionNullability functionNullability,
             boolean hidden,
             boolean deterministic,
+            boolean neverFails,
             String description,
             FunctionKind kind,
-            boolean deprecated)
+            boolean deprecated,
+            Optional<TypeSignature> receiverType,
+            boolean instanceMethod)
     {
         this.functionId = requireNonNull(functionId, "functionId is null");
         this.signature = requireNonNull(signature, "signature is null");
@@ -71,9 +79,15 @@ public class FunctionMetadata
 
         this.hidden = hidden;
         this.deterministic = deterministic;
+        this.neverFails = neverFails;
         this.description = requireNonNull(description, "description is null");
         this.kind = requireNonNull(kind, "kind is null");
         this.deprecated = deprecated;
+        this.receiverType = requireNonNull(receiverType, "receiverType is null");
+        if (instanceMethod && receiverType.isEmpty()) {
+            throw new IllegalArgumentException("instance method must have a receiver type");
+        }
+        this.instanceMethod = instanceMethod;
     }
 
     /**
@@ -130,6 +144,15 @@ public class FunctionMetadata
         return deterministic;
     }
 
+    /**
+     * Whether function never fails for any possible combination of input parameters.
+     */
+    @JsonProperty
+    public boolean isNeverFails()
+    {
+        return neverFails;
+    }
+
     @JsonProperty
     public String getDescription()
     {
@@ -148,6 +171,30 @@ public class FunctionMetadata
         return deprecated;
     }
 
+    /**
+     * The receiver type when this function is a method. For a static method
+     * (invocable as {@code T::method(args)}) this is the named type. For an
+     * instance method (invocable as {@code receiver.method(args)}) this is
+     * the type of the {@code self} parameter (the first declared argument).
+     * Empty for regular functions.
+     */
+    @JsonProperty
+    public Optional<TypeSignature> getReceiverType()
+    {
+        return receiverType;
+    }
+
+    /**
+     * Whether this is an instance method (receiver passed as the first
+     * argument) rather than a static method. Only meaningful when
+     * {@link #getReceiverType()} is present.
+     */
+    @JsonProperty
+    public boolean isInstanceMethod()
+    {
+        return instanceMethod;
+    }
+
     @JsonCreator
     @DoNotCall // For JSON deserialization only
     public static FunctionMetadata fromJson(
@@ -158,9 +205,12 @@ public class FunctionMetadata
             @JsonProperty FunctionNullability functionNullability,
             @JsonProperty boolean hidden,
             @JsonProperty boolean deterministic,
+            @JsonProperty boolean neverFails,
             @JsonProperty String description,
             @JsonProperty FunctionKind kind,
-            @JsonProperty boolean deprecated)
+            @JsonProperty boolean deprecated,
+            @JsonProperty Optional<TypeSignature> receiverType,
+            @JsonProperty boolean instanceMethod)
     {
         return new FunctionMetadata(
                 functionId,
@@ -170,9 +220,12 @@ public class FunctionMetadata
                 functionNullability,
                 hidden,
                 deterministic,
+                neverFails,
                 description,
                 kind,
-                deprecated);
+                deprecated,
+                receiverType == null ? Optional.empty() : receiverType,
+                instanceMethod);
     }
 
     @Override
@@ -222,9 +275,12 @@ public class FunctionMetadata
         private List<Boolean> argumentNullability;
         private boolean hidden;
         private boolean deterministic = true;
+        private boolean neverFails;
         private String description;
         private FunctionId functionId;
         private boolean deprecated;
+        private Optional<TypeSignature> receiverType = Optional.empty();
+        private boolean instanceMethod;
 
         private Builder(String canonicalName, FunctionKind kind)
         {
@@ -289,6 +345,12 @@ public class FunctionMetadata
             return this;
         }
 
+        public Builder neverFails()
+        {
+            this.neverFails = true;
+            return this;
+        }
+
         public Builder noDescription()
         {
             this.description = "";
@@ -317,11 +379,23 @@ public class FunctionMetadata
             return this;
         }
 
+        public Builder receiverType(TypeSignature receiverType)
+        {
+            this.receiverType = Optional.of(requireNonNull(receiverType, "receiverType is null"));
+            return this;
+        }
+
+        public Builder instanceMethod()
+        {
+            this.instanceMethod = true;
+            return this;
+        }
+
         public FunctionMetadata build()
         {
             FunctionId functionId = this.functionId;
             if (functionId == null) {
-                functionId = FunctionId.toFunctionId(canonicalName, signature);
+                functionId = FunctionId.toFunctionId(canonicalName, signature, receiverType);
             }
             if (argumentNullability == null) {
                 argumentNullability = Collections.nCopies(signature.getArgumentTypes().size(), kind == WINDOW);
@@ -334,9 +408,12 @@ public class FunctionMetadata
                     new FunctionNullability(nullable, argumentNullability),
                     hidden,
                     deterministic,
+                    neverFails,
                     description,
                     kind,
-                    deprecated);
+                    deprecated,
+                    receiverType,
+                    instanceMethod);
         }
     }
 }

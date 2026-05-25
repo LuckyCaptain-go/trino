@@ -95,9 +95,11 @@ public class TestPolymorphicScalarFunction
                 .choice(choice -> choice
                         .argumentProperties(BLOCK_POSITION, BLOCK_POSITION)
                         .implementation(methodsGroup -> methodsGroup
-                                .methodWithExplicitJavaTypes("blockPositionLongLong",
+                                .methodWithExplicitJavaTypes(
+                                        "blockPositionLongLong",
                                         asList(Optional.of(Int128.class), Optional.of(Int128.class)))
-                                .methodWithExplicitJavaTypes("blockPositionShortShort",
+                                .methodWithExplicitJavaTypes(
+                                        "blockPositionShortShort",
                                         asList(Optional.of(long.class), Optional.of(long.class)))))
                 .build();
 
@@ -157,7 +159,7 @@ public class TestPolymorphicScalarFunction
                         .implementation(methodsGroup -> methodsGroup.methods("varcharToVarcharCreateSliceWithExtraParameterLength"))
                         .implementation(methodsGroup -> methodsGroup
                                 .methods("varcharToBigintReturnExtraParameter")
-                                .withExtraParameters(context -> ImmutableList.of(42))))
+                                .withExtraParameters(_ -> ImmutableList.of(42))))
                 .build();
 
         ChoicesSpecializedSqlScalarFunction specializedFunction = (ChoicesSpecializedSqlScalarFunction) function.specialize(
@@ -271,7 +273,7 @@ public class TestPolymorphicScalarFunction
                 .deterministic(true)
                 .choice(choice -> choice
                         .implementation(methodsGroup -> methodsGroup
-                                .withExtraParameters(context -> ImmutableList.of(42))))
+                                .withExtraParameters(_ -> ImmutableList.of(42))))
                 .build())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageMatching("methods must be selected first");

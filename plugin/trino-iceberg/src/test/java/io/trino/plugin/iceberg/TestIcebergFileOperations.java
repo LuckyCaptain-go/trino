@@ -46,6 +46,7 @@ import static io.trino.plugin.iceberg.IcebergQueryRunner.ICEBERG_CATALOG;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.COLLECT_EXTENDED_STATISTICS_ON_WRITE;
 import static io.trino.plugin.iceberg.IcebergTestUtils.getFileSystemFactory;
 import static io.trino.plugin.iceberg.IcebergTestUtils.getHiveMetastore;
+import static io.trino.plugin.iceberg.IcebergTestUtils.withSmallRowGroups;
 import static io.trino.plugin.iceberg.util.EqualityDeleteUtils.writeEqualityDeleteForTable;
 import static io.trino.plugin.iceberg.util.FileOperationUtils.FileOperation;
 import static io.trino.plugin.iceberg.util.FileOperationUtils.FileType.DATA;
@@ -386,13 +387,11 @@ public class TestIcebergFileOperations
         assertUpdate("CREATE TABLE test_read_whole_splittable_file(key varchar, data varchar) WITH (partitioning=ARRAY['key'])");
 
         assertUpdate(
-                Session.builder(getSession())
+                withSmallRowGroups(Session.builder(getSession())
                         .setSystemProperty(SystemSessionProperties.WRITER_SCALING_MIN_DATA_PROCESSED, "1PB")
-                        .setCatalogSessionProperty(catalog, "parquet_writer_block_size", "1kB")
-                        .setCatalogSessionProperty(catalog, "orc_writer_max_stripe_size", "1kB")
-                        .setCatalogSessionProperty(catalog, "orc_writer_max_stripe_rows", "1000")
-                        .build(),
-                "INSERT INTO test_read_whole_splittable_file SELECT 'single partition', comment FROM tpch.tiny.orders", 15000);
+                        .build()),
+                "INSERT INTO test_read_whole_splittable_file SELECT 'single partition', comment FROM tpch.tiny.orders",
+                15000);
 
         Session session = Session.builder(getSession())
                 .setCatalogSessionProperty(catalog, IcebergSessionProperties.SPLIT_SIZE, "1kB")
@@ -953,7 +952,8 @@ public class TestIcebergFileOperations
         Table icebergTable = IcebergTestUtils.loadTable(tableName, metastore, fileSystemFactory, "iceberg", "test_schema");
 
         // Delete only 1 row in the file so the data file is not pruned completely
-        writeEqualityDeleteForTable(icebergTable,
+        writeEqualityDeleteForTable(
+                icebergTable,
                 fileSystemFactory,
                 Optional.of(icebergTable.spec()),
                 Optional.empty(),

@@ -83,7 +83,8 @@ class TestMemoryPools
 
     private RevocableMemoryDriver createRevocableMemoryDriver(MemoryPool userPool, DataSize reservedPerPage, long numberOfPages)
     {
-        QueryContext queryContext = new QueryContext(new QueryId("query"),
+        QueryContext queryContext = new QueryContext(
+                new QueryId("query"),
                 TEN_MEGABYTES,
                 userPool,
                 new TestingGcMonitor(),
@@ -100,7 +101,7 @@ class TestMemoryPools
                 new PlanNodeId("revokable_operator"),
                 TableScanOperator.class.getSimpleName());
 
-        OutputFactory outputFactory = new PageConsumerOutputFactory(types -> (page -> {}));
+        OutputFactory outputFactory = new PageConsumerOutputFactory(_ -> (_ -> {}));
         Operator outputOperator = outputFactory.createOutputOperator(2, new PlanNodeId("output"), ImmutableList.of(), Function.identity(), createTestingPagesSerdeFactory(LZ4)).createOperator(driverContext);
         RevocableMemoryOperator revocableMemoryOperator = new RevocableMemoryOperator(revokableOperatorContext, reservedPerPage, numberOfPages);
 

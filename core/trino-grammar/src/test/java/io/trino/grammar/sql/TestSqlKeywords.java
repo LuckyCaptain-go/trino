@@ -189,6 +189,7 @@ public class TestSqlKeywords
                         "MINUTE",
                         "MONTH",
                         "NATURAL",
+                        "NEAREST",
                         "NESTED",
                         "NEXT",
                         "NFC",

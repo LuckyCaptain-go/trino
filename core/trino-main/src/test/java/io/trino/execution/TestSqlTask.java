@@ -136,9 +136,11 @@ public class TestSqlTask
     {
         SqlTask sqlTask = createInitialTask();
 
-        TaskInfo taskInfo = sqlTask.updateTask(TEST_SESSION,
+        TaskInfo taskInfo = sqlTask.updateTask(
+                TEST_SESSION,
                 Span.getInvalid(),
                 Optional.of(PLAN_FRAGMENT),
+                ImmutableMap.of(),
                 ImmutableList.of(),
                 PipelinedOutputBuffers.createInitial(PARTITIONED)
                         .withNoMoreBufferIds(),
@@ -151,9 +153,11 @@ public class TestSqlTask
         assertThat(taskInfo.taskStatus().state()).isEqualTo(TaskState.RUNNING);
         assertThat(taskInfo.taskStatus().version()).isEqualTo(STARTING_VERSION);
 
-        taskInfo = sqlTask.updateTask(TEST_SESSION,
+        taskInfo = sqlTask.updateTask(
+                TEST_SESSION,
                 Span.getInvalid(),
                 Optional.of(PLAN_FRAGMENT),
+                ImmutableMap.of(),
                 ImmutableList.of(new SplitAssignment(TABLE_SCAN_NODE_ID, ImmutableSet.of(), true)),
                 PipelinedOutputBuffers.createInitial(PARTITIONED)
                         .withNoMoreBufferIds(),
@@ -174,9 +178,11 @@ public class TestSqlTask
 
         assertThat(sqlTask.getTaskStatus().state()).isEqualTo(TaskState.RUNNING);
         assertThat(sqlTask.getTaskStatus().version()).isEqualTo(STARTING_VERSION);
-        sqlTask.updateTask(TEST_SESSION,
+        sqlTask.updateTask(
+                TEST_SESSION,
                 Span.getInvalid(),
                 Optional.of(PLAN_FRAGMENT),
+                ImmutableMap.of(),
                 ImmutableList.of(new SplitAssignment(TABLE_SCAN_NODE_ID, ImmutableSet.of(SPLIT), true)),
                 PipelinedOutputBuffers.createInitial(PARTITIONED).withBuffer(OUT, 0).withNoMoreBufferIds(),
                 ImmutableMap.of(),
@@ -218,9 +224,11 @@ public class TestSqlTask
     {
         SqlTask sqlTask = createInitialTask();
 
-        TaskInfo taskInfo = sqlTask.updateTask(TEST_SESSION,
+        TaskInfo taskInfo = sqlTask.updateTask(
+                TEST_SESSION,
                 Span.getInvalid(),
                 Optional.of(PLAN_FRAGMENT),
+                ImmutableMap.of(),
                 ImmutableList.of(),
                 PipelinedOutputBuffers.createInitial(PARTITIONED)
                         .withBuffer(OUT, 0)
@@ -262,9 +270,11 @@ public class TestSqlTask
 
         assertThat(sqlTask.getTaskStatus().state()).isEqualTo(TaskState.RUNNING);
         assertThat(sqlTask.getTaskStatus().version()).isEqualTo(STARTING_VERSION);
-        sqlTask.updateTask(TEST_SESSION,
+        sqlTask.updateTask(
+                TEST_SESSION,
                 Span.getInvalid(),
                 Optional.of(PLAN_FRAGMENT),
+                ImmutableMap.of(),
                 ImmutableList.of(new SplitAssignment(TABLE_SCAN_NODE_ID, ImmutableSet.of(SPLIT), true)),
                 PipelinedOutputBuffers.createInitial(PARTITIONED).withBuffer(OUT, 0).withNoMoreBufferIds(),
                 ImmutableMap.of(),
@@ -371,6 +381,7 @@ public class TestSqlTask
                 TEST_SESSION,
                 Span.getInvalid(),
                 Optional.of(PLAN_FRAGMENT_WITH_DYNAMIC_FILTER_SOURCE),
+                ImmutableMap.of(),
                 ImmutableList.of(new SplitAssignment(TABLE_SCAN_NODE_ID, ImmutableSet.of(SPLIT), false)),
                 PipelinedOutputBuffers.createInitial(PARTITIONED)
                         .withBuffer(OUT, 0)
@@ -403,6 +414,7 @@ public class TestSqlTask
                 TEST_SESSION,
                 Span.getInvalid(),
                 Optional.of(PLAN_FRAGMENT_WITH_DYNAMIC_FILTER_SOURCE),
+                ImmutableMap.of(),
                 ImmutableList.of(new SplitAssignment(TABLE_SCAN_NODE_ID, ImmutableSet.of(), false)),
                 outputBuffers,
                 ImmutableMap.of(),
@@ -432,7 +444,8 @@ public class TestSqlTask
         TaskId taskId = new TaskId(new StageId("query", 0), nextTaskId.incrementAndGet(), 0);
         URI location = URI.create("fake://task/" + taskId);
 
-        QueryContext queryContext = new QueryContext(new QueryId("query"),
+        QueryContext queryContext = new QueryContext(
+                new QueryId("query"),
                 DataSize.of(1, MEGABYTE),
                 new MemoryPool(DataSize.of(1, GIGABYTE)),
                 new TestingGcMonitor(),
@@ -442,7 +455,7 @@ public class TestSqlTask
                 DataSize.of(1, MEGABYTE),
                 new SpillSpaceTracker(DataSize.of(1, GIGABYTE)));
 
-        queryContext.addTaskContext(new TaskStateMachine(taskId, taskNotificationExecutor), testSessionBuilder().build(), () -> {}, false, false);
+        queryContext.addTaskContext(new TaskStateMachine(taskId, taskNotificationExecutor), ImmutableMap.of(), testSessionBuilder().build(), () -> {}, false, false);
 
         return createSqlTask(
                 taskId,
@@ -452,7 +465,7 @@ public class TestSqlTask
                 noopTracer(),
                 sqlTaskExecutionFactory,
                 taskNotificationExecutor,
-                sqlTask -> {},
+                _ -> {},
                 DataSize.of(32, MEGABYTE),
                 DataSize.of(200, MEGABYTE),
                 new ExchangeManagerRegistry(OpenTelemetry.noop(), Tracing.noopTracer(), new SecretsResolver(ImmutableMap.of()), new ExchangeManagerConfig()),

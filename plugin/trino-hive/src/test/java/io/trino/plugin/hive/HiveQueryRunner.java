@@ -236,7 +236,7 @@ public final class HiveQueryRunner
                 Path dataDir = queryRunner.getCoordinator().getBaseDataDir().resolve("hive_data");
 
                 if (hiveProperties.buildOrThrow().keySet().stream().noneMatch(key ->
-                        key.equals("fs.hadoop.enabled") || key.startsWith("fs.native-"))) {
+                        key.matches("fs\\.(azure|gcs|s3|local|hadoop)\\.enabled"))) {
                     hiveProperties.put("fs.hadoop.enabled", "true");
                 }
 
@@ -329,7 +329,8 @@ public final class HiveQueryRunner
     {
         return testSessionBuilder()
                 .setIdentity(Identity.forUser("hive")
-                        .withConnectorRoles(role.map(selectedRole -> ImmutableMap.of(
+                        .withConnectorRoles(role
+                                .map(selectedRole -> ImmutableMap.of(
                                         HIVE_CATALOG, selectedRole,
                                         HIVE_BUCKETED_CATALOG, selectedRole))
                                 .orElse(ImmutableMap.of()))
@@ -355,33 +356,20 @@ public final class HiveQueryRunner
     private static void copyTableBucketed(QueryRunner queryRunner, QualifiedObjectName tableName, TpchTable<?> table, Session session, ColumnNaming columnNaming)
     {
         long start = System.nanoTime();
-        @Language("SQL") String sql;
-        switch (tableName.objectName()) {
-            case "part":
-            case "partsupp":
-            case "supplier":
-            case "nation":
-            case "region":
-                sql = format("CREATE TABLE %s AS SELECT * FROM %s", tableName.objectName(), tableName);
-                break;
-            case "lineitem":
-                sql = format(
-                        "CREATE TABLE %s WITH (bucketed_by=array['%s'], bucket_count=11) AS SELECT * FROM %s",
-                        tableName.objectName(),
-                        columnNaming.getName(table.getColumn("orderkey")),
-                        tableName);
-                break;
-            case "customer":
-            case "orders":
-                sql = format(
-                        "CREATE TABLE %s WITH (bucketed_by=array['%s'], bucket_count=11) AS SELECT * FROM %s",
-                        tableName.objectName(),
-                        columnNaming.getName(table.getColumn("custkey")),
-                        tableName);
-                break;
-            default:
-                throw new UnsupportedOperationException();
-        }
+        @Language("SQL") String sql = switch (tableName.objectName()) {
+            case "part", "partsupp", "supplier", "nation", "region" -> format("CREATE TABLE %s AS SELECT * FROM %s", tableName.objectName(), tableName);
+            case "lineitem" -> format(
+                    "CREATE TABLE %s WITH (bucketed_by=array['%s'], bucket_count=11) AS SELECT * FROM %s",
+                    tableName.objectName(),
+                    columnNaming.getName(table.getColumn("orderkey")),
+                    tableName);
+            case "customer", "orders" -> format(
+                    "CREATE TABLE %s WITH (bucketed_by=array['%s'], bucket_count=11) AS SELECT * FROM %s",
+                    tableName.objectName(),
+                    columnNaming.getName(table.getColumn("custkey")),
+                    tableName);
+            default -> throw new UnsupportedOperationException();
+        };
         long rows = (Long) queryRunner.execute(session, sql).getMaterializedRows().get(0).getField(0);
         log.info("Imported %s rows from %s in %s", rows, tableName, nanosSince(start));
     }
@@ -412,8 +400,8 @@ public final class HiveQueryRunner
                     .setTpcdsCatalogEnabled(true)
                     // Uncomment to enable standard column naming (column names to be prefixed with the first letter of the table name, e.g.: o_orderkey vs orderkey)
                     // and standard column types (decimals vs double for some columns). This will allow running unmodified tpch queries on the cluster.
-                    //.setTpchColumnNaming(ColumnNaming.STANDARD)
-                    //.setTpchDecimalTypeMapping(DecimalTypeMapping.DECIMAL)
+                    // .setTpchColumnNaming(ColumnNaming.STANDARD)
+                    // .setTpchDecimalTypeMapping(DecimalTypeMapping.DECIMAL)
                     .build();
             log.info("======== SERVER STARTED ========");
             log.info("\n====\n%s\n====", queryRunner.getCoordinator().getBaseUrl());

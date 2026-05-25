@@ -102,6 +102,7 @@ import io.trino.sql.tree.MergeDelete;
 import io.trino.sql.tree.MergeInsert;
 import io.trino.sql.tree.MergeUpdate;
 import io.trino.sql.tree.NaturalJoin;
+import io.trino.sql.tree.Nearest;
 import io.trino.sql.tree.NestedColumns;
 import io.trino.sql.tree.Node;
 import io.trino.sql.tree.NullInputCharacteristic;
@@ -476,6 +477,22 @@ public final class SqlFormatter
         }
 
         @Override
+        protected Void visitNearest(Nearest node, Integer indent)
+        {
+            append(indent, "NEAREST (");
+            append(indent + 1, "FROM ");
+            process(node.getRelation(), indent + 1);
+            node.getWhere().ifPresent(where -> append(indent + 1, "WHERE ")
+                    .append(formatExpression(where))
+                    .append('\n'));
+            append(indent + 1, "MATCH ")
+                    .append(formatExpression(node.getMatch()))
+                    .append('\n');
+            append(indent, ")");
+            return null;
+        }
+
+        @Override
         protected Void visitTableFunctionInvocation(TableFunctionInvocation node, Integer indent)
         {
             append(indent, "TABLE(");
@@ -635,7 +652,12 @@ public final class SqlFormatter
         protected Void visitDescribeOutput(DescribeOutput node, Integer indent)
         {
             append(indent, "DESCRIBE OUTPUT ");
-            builder.append(formatName(node.getName()));
+
+            builder.append(switch (node.getTarget()) {
+                case DescribeOutput.Target.PreparedStatement(Identifier name) -> formatName(name);
+                case DescribeOutput.Target.InlineQuery(Query query) -> '(' + formatSql(query) + ')';
+            });
+
             return null;
         }
 
@@ -1111,7 +1133,12 @@ public final class SqlFormatter
 
             append(indent + 1, "USING ");
 
-            processRelation(node.getSource(), indent + 2);
+            if (node.getSource() instanceof Table table) {
+                builder.append(formatName(table.getName()));
+            }
+            else {
+                processRelation(node.getSource(), indent + 2);
+            }
 
             builder.append("\n");
             append(indent + 1, "ON ");
@@ -2449,7 +2476,7 @@ public final class SqlFormatter
         protected Void visitSessionProperty(SessionProperty node, Integer indent)
         {
             append(indent, formatName(node.getName()))
-                .append(" = ")
+                    .append(" = ")
                     .append(formatExpression(node.getValue()));
             return null;
         }
@@ -2794,7 +2821,8 @@ public final class SqlFormatter
 
     private static String formatGrantScope(GrantObject grantObject)
     {
-        return String.format("%s%s%s",
+        return String.format(
+                "%s%s%s",
                 grantObject.getBranch().isPresent() ? "BRANCH " + formatName(grantObject.getBranch().get()) + " IN " : "",
                 grantObject.getEntityKind().isPresent() ? grantObject.getEntityKind().get() + " " : "",
                 formatName(grantObject.getName()));

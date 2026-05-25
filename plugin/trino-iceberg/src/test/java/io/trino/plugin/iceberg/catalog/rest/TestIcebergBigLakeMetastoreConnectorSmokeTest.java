@@ -13,11 +13,9 @@
  */
 package io.trino.plugin.iceberg.catalog.rest;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.collect.ImmutableList;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.json.ObjectMapperProvider;
-import io.trino.filesystem.FileIterator;
+import io.airlift.json.JsonMapperProvider;
 import io.trino.filesystem.Location;
 import io.trino.plugin.iceberg.BaseIcebergConnectorSmokeTest;
 import io.trino.plugin.iceberg.IcebergConfig;
@@ -38,7 +36,6 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
-import java.util.List;
 
 import static io.trino.plugin.iceberg.IcebergTestUtils.checkParquetFileSorting;
 import static io.trino.testing.SystemEnvironmentUtils.requireEnv;
@@ -54,7 +51,7 @@ final class TestIcebergBigLakeMetastoreConnectorSmokeTest
     private static final String SCHEMA = "test_iceberg_biglake_" + randomNameSuffix();
     private static final String GCP_STORAGE_BUCKET = requireEnv("GCP_STORAGE_BUCKET");
     private static final byte[] GCS_JSON_KEY_BYTES = Base64.getDecoder().decode(requireEnv("GCP_CREDENTIALS_KEY"));
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapperProvider().get();
+    private static final JsonMapper JSON_MAPPER = new JsonMapperProvider().get();
 
     public TestIcebergBigLakeMetastoreConnectorSmokeTest()
     {
@@ -80,7 +77,7 @@ final class TestIcebergBigLakeMetastoreConnectorSmokeTest
         Path gcpCredentialsFile = Files.createTempFile("gcp-credentials", ".json");
         gcpCredentialsFile.toFile().deleteOnExit();
         Files.write(gcpCredentialsFile, GCS_JSON_KEY_BYTES);
-        String projectId = OBJECT_MAPPER.readTree(GCS_JSON_KEY_BYTES).get("project_id").asText();
+        String projectId = JSON_MAPPER.readTree(GCS_JSON_KEY_BYTES).get("project_id").asText();
 
         return IcebergQueryRunner.builder(SCHEMA)
                 .addIcebergProperty("iceberg.file-format", format.name())
@@ -94,7 +91,7 @@ final class TestIcebergBigLakeMetastoreConnectorSmokeTest
                 .addIcebergProperty("iceberg.rest-catalog.view-endpoints-enabled", "false")
                 .addIcebergProperty("iceberg.writer-sort-buffer-size", "1MB")
                 .addIcebergProperty("iceberg.allowed-extra-properties", "write.metadata.delete-after-commit.enabled,write.metadata.previous-versions-max")
-                .addIcebergProperty("fs.native-gcs.enabled", "true")
+                .addIcebergProperty("fs.gcs.enabled", "true")
                 .addIcebergProperty("gcs.json-key-file-path", gcpCredentialsFile.toString())
                 .setSchemaInitializer(SchemaInitializer.builder()
                         .withSchemaName(SCHEMA)
@@ -232,13 +229,6 @@ final class TestIcebergBigLakeMetastoreConnectorSmokeTest
     }
 
     @Test
-    @Override // TODO (https://github.com/trinodb/trino/issues/27679) Enable this test once Google fixes a bug. January 2026 release will contain the fix.
-    public void testRegisterTableWithComments()
-    {
-        abort("skipped");
-    }
-
-    @Test
     @Override // TODO Enable once timeout issue is fixed
     public void testDeleteRowsConcurrently()
     {
@@ -246,7 +236,7 @@ final class TestIcebergBigLakeMetastoreConnectorSmokeTest
     }
 
     @Test
-    @Override // Override because BigLake metastore requires table location to start with the prefix with the table name without following spaces
+    @Override // Override because BigLake metastore doesn't allow changing a table location
     public void testCreateTableWithTrailingSpaceInLocation()
     {
         String tableName = "test_create_table_with_trailing_space_" + randomNameSuffix();
@@ -255,7 +245,7 @@ final class TestIcebergBigLakeMetastoreConnectorSmokeTest
 
         assertThat(query(format("CREATE TABLE %s WITH (location = '%s') AS SELECT 1 AS a, 'INDIA' AS b, true AS c", tableName, tableLocationWithTrailingSpace))).failure()
                 .hasMessage("Failed to create transaction")
-                .hasStackTraceContaining("Malformed request: The table `location` property must point to a location in the catalog.");
+                .hasStackTraceContaining("Malformed request: The table `location` property can only point to the default path:");
     }
 
     @Test
@@ -264,16 +254,16 @@ final class TestIcebergBigLakeMetastoreConnectorSmokeTest
     {
         assertThatThrownBy(super::testRegisterTableWithDifferentTableName)
                 .hasMessageContaining("Failed to register table")
-                .hasStackTraceContaining("does not start with the expected prefix");
+                .hasStackTraceContaining("Malformed request: Invalid metadata location");
     }
 
     @Test
     @Override // BigLake metastore requires table location to start with the prefix with the table name
     public void testRegisterTableWithTrailingSpaceInLocation()
     {
-        assertThatThrownBy(super::testRegisterTableWithDifferentTableName)
-                .hasMessageContaining("Failed to register table")
-                .hasStackTraceContaining("does not start with the expected prefix");
+        assertThatThrownBy(super::testRegisterTableWithTrailingSpaceInLocation)
+                .hasMessageMatching("Expected query .* to succeed: CREATE TABLE.*")
+                .hasStackTraceContaining("Malformed request: The table `location` property can only point to the default path:");
     }
 
     @Test
@@ -313,16 +303,5 @@ final class TestIcebergBigLakeMetastoreConnectorSmokeTest
                 .isFalse();
 
         assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
-    }
-
-    private List<String> listFiles(Location location)
-            throws IOException
-    {
-        ImmutableList.Builder<String> builder = ImmutableList.builder();
-        FileIterator iterator = fileSystem.listFiles(location);
-        while (iterator.hasNext()) {
-            builder.add(iterator.next().location().toString());
-        }
-        return builder.build();
     }
 }

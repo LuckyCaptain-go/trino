@@ -17,20 +17,21 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import io.trino.connector.system.GlobalSystemConnector;
 import io.trino.spi.TrinoException;
 import io.trino.spi.function.BoundSignature;
+import io.trino.spi.function.CatalogSchemaFunctionName;
 import io.trino.spi.function.FunctionId;
 import io.trino.spi.function.LongVariableConstraint;
 import io.trino.spi.function.Signature;
 import io.trino.spi.function.TypeVariableConstraint;
+import io.trino.spi.type.FunctionType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeParameter;
 import io.trino.spi.type.TypeSignature;
 import io.trino.sql.analyzer.TypeSignatureProvider;
-import io.trino.type.FunctionType;
-import io.trino.type.JsonType;
 import io.trino.type.TypeCoercion;
 import io.trino.type.UnknownType;
 
@@ -47,10 +48,13 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSortedMap.toImmutableSortedMap;
+import static io.trino.metadata.GlobalFunctionCatalog.BUILTIN_SCHEMA;
+import static io.trino.metadata.OperatorNameUtil.mangleOperatorName;
 import static io.trino.metadata.SignatureBinder.RelationshipType.EXACT;
 import static io.trino.metadata.SignatureBinder.RelationshipType.EXPLICIT_COERCION_FROM;
 import static io.trino.metadata.SignatureBinder.RelationshipType.EXPLICIT_COERCION_TO;
 import static io.trino.metadata.SignatureBinder.RelationshipType.IMPLICIT_COERCION;
+import static io.trino.spi.function.OperatorType.CAST;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static io.trino.type.TypeCalculation.calculateLiteralValue;
 import static io.trino.type.TypeCoercion.isCovariantTypeBase;
@@ -507,16 +511,15 @@ public class SignatureBinder
                 }
             }
             switch (statusMerger.getCurrent()) {
-                case UNCHANGED_SATISFIED:
-                    break;
-                case UNCHANGED_NOT_SATISFIED:
+                case UNCHANGED_SATISFIED -> {}
+                case UNCHANGED_NOT_SATISFIED -> {
                     return Optional.empty();
-                case CHANGED:
+                }
+                case CHANGED -> {
                     continue;
-                case UNSOLVABLE:
-                    throw new VerifyException();
-                default:
-                    throw new UnsupportedOperationException("unknown status");
+                }
+                case UNSOLVABLE -> throw new VerifyException();
+                default -> throw new UnsupportedOperationException("unknown status");
             }
             break;
         }
@@ -539,7 +542,10 @@ public class SignatureBinder
             if (variableBinder.containsLongVariable(variableName)) {
                 Long currentValue = variableBinder.getLongVariable(variableName);
                 checkState(Objects.equals(currentValue, calculatedValue),
-                        "variable '%s' is already set to %s when trying to set %s", variableName, currentValue, calculatedValue);
+                        "variable '%s' is already set to %s when trying to set %s",
+                        variableName,
+                        currentValue,
+                        calculatedValue);
             }
             variableBinder.setLongVariable(variableName, calculatedValue);
         }
@@ -558,7 +564,8 @@ public class SignatureBinder
             case TypeParameter.Variable(String variable) -> {
                 checkState(
                         typeVariables.containsLongVariable(variable),
-                        "Variable is not bound: %s", variable);
+                        "Variable is not bound: %s",
+                        variable);
                 Long variableValue = typeVariables.getLongVariable(variable);
                 yield TypeParameter.numericParameter(variableValue);
             }
@@ -598,13 +605,14 @@ public class SignatureBinder
 
     private boolean canCast(Type fromType, Type toType)
     {
-        if (toType instanceof UnknownType) {
+        // NULL can be cast to any type; avoid re-entering coercion cache.
+        if (fromType instanceof UnknownType || toType instanceof UnknownType) {
             return true;
         }
-        if (fromType instanceof RowType) {
-            if (toType instanceof RowType) {
-                List<Type> fromTypeParameters = fromType.getTypeParameters();
-                List<Type> toTypeParameters = toType.getTypeParameters();
+        if (fromType instanceof RowType fromRowType) {
+            if (toType instanceof RowType toRowType) {
+                List<Type> fromTypeParameters = fromRowType.getFieldTypes();
+                List<Type> toTypeParameters = toRowType.getFieldTypes();
                 if (fromTypeParameters.size() != toTypeParameters.size()) {
                     return false;
                 }
@@ -615,15 +623,15 @@ public class SignatureBinder
                 }
                 return true;
             }
-            if (toType instanceof JsonType) {
+            if (isRecursiveCastFromRow(toType)) {
                 return fromType.getTypeParameters().stream()
                         .allMatch(fromTypeParameter -> canCast(fromTypeParameter, toType));
             }
             return false;
         }
-        if (fromType instanceof JsonType) {
-            if (toType instanceof RowType) {
-                return toType.getTypeParameters().stream()
+        if (toType instanceof RowType toRowType) {
+            if (isRecursiveCastToRow(fromType)) {
+                return toRowType.getFieldTypes().stream()
                         .allMatch(toTypeParameter -> canCast(fromType, toTypeParameter));
             }
         }
@@ -634,6 +642,61 @@ public class SignatureBinder
         catch (TrinoException e) {
             return false;
         }
+    }
+
+    /// Check if there is a recursive variadic CAST from ROW.
+    /// This needs special handling because the cast is applied to each field of ROW individually.
+    private boolean isRecursiveCastFromRow(Type toType)
+    {
+        return metadata.getFunctions(null, new CatalogSchemaFunctionName(GlobalSystemConnector.NAME, BUILTIN_SCHEMA, mangleOperatorName(CAST))).stream()
+                .map(cast -> cast.functionMetadata().getSignature())
+                .anyMatch(signature -> isRecursiveCastFromRow(toType, signature));
+    }
+
+    private static boolean isRecursiveCastFromRow(Type toType, Signature signature)
+    {
+        // the return type must match toType
+        if (!toType.getTypeSignature().equals(signature.getReturnType())) {
+            return false;
+        }
+
+        // there must be exactly one type variable constraint and no long variable constraints
+        if (signature.getTypeVariableConstraints().size() != 1 || !signature.getLongVariableConstraints().isEmpty()) {
+            return false;
+        }
+        TypeVariableConstraint typeVariableConstraint = signature.getTypeVariableConstraints().getFirst();
+
+        // The argument type must be a type variable with variadic bound of "row"
+        return signature.getArgumentTypes().size() == 1 &&
+                signature.getArgumentTypes().getFirst().getBase().equals(typeVariableConstraint.getName()) &&
+                typeVariableConstraint.isRowType();
+    }
+
+    /// Check if there is a recursive variadic CAST to ROW.
+    /// This needs special handling because the cast is applied to each field of ROW individually.
+    private boolean isRecursiveCastToRow(Type fromType)
+    {
+        return metadata.getFunctions(null, new CatalogSchemaFunctionName(GlobalSystemConnector.NAME, BUILTIN_SCHEMA, mangleOperatorName(CAST))).stream()
+                .map(cast -> cast.functionMetadata().getSignature())
+                .anyMatch(signature -> isRecursiveCastToRow(fromType, signature));
+    }
+
+    private static boolean isRecursiveCastToRow(Type fromType, Signature signature)
+    {
+        // the argument type must match fromType
+        if (signature.getArgumentTypes().size() != 1 || !fromType.getTypeSignature().equals(signature.getArgumentTypes().getFirst())) {
+            return false;
+        }
+
+        // there must be exactly one type variable constraint and no long variable constraints
+        if (signature.getTypeVariableConstraints().size() != 1 || !signature.getLongVariableConstraints().isEmpty()) {
+            return false;
+        }
+        TypeVariableConstraint typeVariableConstraint = signature.getTypeVariableConstraints().getFirst();
+
+        // The return type must be a type variable with variadic bound of "row"
+        return signature.getReturnType().getBase().equals(typeVariableConstraint.getName()) &&
+                typeVariableConstraint.isRowType();
     }
 
     private static List<TypeSignature> getLambdaArgumentTypeSignatures(TypeSignature lambdaTypeSignature)
@@ -669,21 +732,18 @@ public class SignatureBinder
         public void add(SolverReturnStatus newStatus)
         {
             switch (newStatus) {
-                case UNCHANGED_SATISFIED:
-                    break;
-                case UNCHANGED_NOT_SATISFIED:
+                case UNCHANGED_SATISFIED -> {}
+                case UNCHANGED_NOT_SATISFIED -> {
                     if (current == SolverReturnStatus.UNCHANGED_SATISFIED) {
                         current = SolverReturnStatus.UNCHANGED_NOT_SATISFIED;
                     }
-                    break;
-                case CHANGED:
+                }
+                case CHANGED -> {
                     if (current == SolverReturnStatus.UNCHANGED_SATISFIED || current == SolverReturnStatus.UNCHANGED_NOT_SATISFIED) {
                         current = SolverReturnStatus.CHANGED;
                     }
-                    break;
-                case UNSOLVABLE:
-                    current = SolverReturnStatus.UNSOLVABLE;
-                    break;
+                }
+                case UNSOLVABLE -> current = SolverReturnStatus.UNSOLVABLE;
             }
         }
 
@@ -780,8 +840,7 @@ public class SignatureBinder
                             if (type.isEmpty()) {
                                 return SolverReturnStatus.UNSOLVABLE;
                             }
-                            verify(
-                                    type.get().getBaseName().equals(formalTypeSignature.getBase()),
+                            verify(type.get().getBaseName().equals(formalTypeSignature.getBase()),
                                     "Unexpected coerce result for %s and %s: %s",
                                     actualType,
                                     formalTypeSignature.getBase(),

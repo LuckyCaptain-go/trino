@@ -73,7 +73,7 @@ public final class SessionPropertyManager
 
     public SessionPropertyManager(SystemSessionPropertiesProvider systemSessionPropertiesProvider)
     {
-        this(ImmutableSet.of(systemSessionPropertiesProvider), connectorName -> ImmutableMap.of());
+        this(ImmutableSet.of(systemSessionPropertiesProvider), _ -> ImmutableMap.of());
     }
 
     public SessionPropertyManager(Set<SystemSessionPropertiesProvider> systemSessionProperties, CatalogServiceProvider<Map<String, PropertyMetadata<?>>> connectorSessionProperties)
@@ -95,7 +95,8 @@ public final class SessionPropertyManager
     {
         requireNonNull(sessionProperty, "sessionProperty is null");
         checkState(systemSessionProperties.put(sessionProperty.getName(), sessionProperty) == null,
-                "System session property '%s' are already registered", sessionProperty.getName());
+                "System session property '%s' are already registered",
+                sessionProperty.getName());
     }
 
     public Optional<PropertyMetadata<?>> getSystemSessionPropertyMetadata(String name)
@@ -205,7 +206,9 @@ public final class SessionPropertyManager
     private static <T> T decodePropertyValue(String fullPropertyName, @Nullable String propertyValue, Class<T> type, PropertyMetadata<?> metadata)
     {
         if (metadata.getJavaType() != type) {
-            throw new TrinoException(INVALID_SESSION_PROPERTY, format("Session property '%s' has type '%s', but requested type was %s", fullPropertyName,
+            throw new TrinoException(INVALID_SESSION_PROPERTY, format(
+                    "Session property '%s' has type '%s', but requested type was %s",
+                    fullPropertyName,
                     metadata.getJavaType().getName(),
                     type.getName()));
         }
@@ -228,7 +231,7 @@ public final class SessionPropertyManager
     public static Object evaluatePropertyValue(Expression expression, Type expectedType, Session session, PlannerContext plannerContext, AccessControl accessControl, Map<NodeRef<Parameter>, Expression> parameters)
     {
         Expression rewritten = ExpressionTreeRewriter.rewriteWith(new ParameterRewriter(parameters), expression);
-        Object value = evaluateConstant(rewritten, expectedType, plannerContext, session, accessControl);
+        Object value = evaluateConstant(rewritten, expectedType, parameters, plannerContext, session, accessControl);
 
         // convert to object value type of SQL type
         Block block = writeNativeValue(expectedType, value);

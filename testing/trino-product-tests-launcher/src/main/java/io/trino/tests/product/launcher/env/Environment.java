@@ -14,8 +14,7 @@
 package io.trino.tests.product.launcher.env;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
 import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.InspectContainerResponse;
 import com.github.dockerjava.api.model.Bind;
@@ -631,7 +630,7 @@ public final class Environment
                 }
             }
 
-            containers.forEach((name, container) -> {
+            containers.forEach((_, container) -> {
                 container
                         .addContainerListener(listener)
                         .withCreateContainerCmdModifier(createContainerCmd -> {
@@ -681,7 +680,7 @@ public final class Environment
         private static Consumer<OutputFrame> discardContainerLogs(DockerContainer container)
         {
             // Discard log frames
-            return outputFrame -> {};
+            return _ -> {};
         }
 
         private void addConfiguredFeaturesConfig()
@@ -692,18 +691,16 @@ public final class Environment
             DockerContainer testContainer = containers.get(TESTS);
             // write a custom tempto config with list of connectors the environment declares to have configured
             // since it's needed in TestConfiguredFeatures
-            ObjectMapper objectMapper = new ObjectMapper(new YAMLFactory());
+            YAMLMapper yamlMapper = new YAMLMapper();
             File tempFile;
             try {
                 tempFile = File.createTempFile("tempto-configured-features-", ".yaml");
-                objectMapper.writeValue(tempFile,
+                yamlMapper.writeValue(tempFile,
                         Map.of("databases",
                                 Map.of("trino",
                                         Map.of(
-                                                "configured_connectors",
-                                                configuredFeatures.asMap().getOrDefault(CONNECTOR, ImmutableList.of()),
-                                                "configured_password_authenticators",
-                                                configuredFeatures.asMap().getOrDefault(PASSWORD_AUTHENTICATOR, ImmutableList.of())))));
+                                                "configured_connectors", configuredFeatures.asMap().getOrDefault(CONNECTOR, ImmutableList.of()),
+                                                "configured_password_authenticators", configuredFeatures.asMap().getOrDefault(PASSWORD_AUTHENTICATOR, ImmutableList.of())))));
             }
             catch (IOException e) {
                 throw new RuntimeException(e);

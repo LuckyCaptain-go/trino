@@ -18,7 +18,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.units.Duration;
 import io.trino.filesystem.TrinoFileSystemFactory;
-import io.trino.filesystem.cache.DefaultCachingHostAddressProvider;
+import io.trino.filesystem.cache.NoopSplitAffinityProvider;
 import io.trino.metastore.HiveMetastore;
 import io.trino.metastore.cache.CachingHiveMetastore;
 import io.trino.plugin.hive.TrinoViewHiveMetastore;
@@ -68,11 +68,13 @@ import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
+import static com.google.common.collect.Maps.transformValues;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static com.google.common.util.concurrent.MoreExecutors.newDirectExecutorService;
 import static io.trino.metastore.cache.CachingHiveMetastore.createPerTransactionCache;
@@ -190,7 +192,7 @@ public class TestIcebergSplitSource
                 TESTING_TYPE_MANAGER,
                 false,
                 new IcebergConfig().getMinimumAssignedSplitWeight(),
-                new DefaultCachingHostAddressProvider(),
+                new NoopSplitAffinityProvider(),
                 new InMemoryMetricsReporter(),
                 newDirectExecutorService())) {
             ImmutableList.Builder<IcebergSplit> splits = ImmutableList.builder();
@@ -221,14 +223,14 @@ public class TestIcebergSplitSource
         IcebergTableHandle tableHandle = createTableHandle(schemaTableName, nationTable, TupleDomain.all());
 
         IcebergSplit split = generateSplit(nationTable, tableHandle, DynamicFilter.EMPTY);
-        assertThat(split.getFileStatisticsDomain()).isEqualTo(TupleDomain.all());
+        assertThat(split.fileStatisticsDomain()).isEqualTo(TupleDomain.all());
 
         IcebergColumnHandle nationKey = IcebergColumnHandle.optional(new ColumnIdentity(1, "nationkey", ColumnIdentity.TypeCategory.PRIMITIVE, ImmutableList.of()))
                 .columnType(BIGINT)
                 .build();
         tableHandle = createTableHandle(schemaTableName, nationTable, TupleDomain.fromFixedValues(ImmutableMap.of(nationKey, NullableValue.of(BIGINT, 1L))));
         split = generateSplit(nationTable, tableHandle, DynamicFilter.EMPTY);
-        assertThat(split.getFileStatisticsDomain()).isEqualTo(TupleDomain.withColumnDomains(
+        assertThat(split.fileStatisticsDomain()).isEqualTo(TupleDomain.withColumnDomains(
                 ImmutableMap.of(nationKey, Domain.create(ValueSet.ofRanges(Range.range(BIGINT, 0L, true, 24L, true)), false))));
 
         IcebergColumnHandle regionKey = IcebergColumnHandle.optional(new ColumnIdentity(3, "regionkey", ColumnIdentity.TypeCategory.PRIMITIVE, ImmutableList.of()))
@@ -266,7 +268,7 @@ public class TestIcebergSplitSource
                 return TupleDomain.all();
             }
         });
-        assertThat(split.getFileStatisticsDomain()).isEqualTo(TupleDomain.withColumnDomains(
+        assertThat(split.fileStatisticsDomain()).isEqualTo(TupleDomain.withColumnDomains(
                 ImmutableMap.of(
                         nationKey, Domain.create(ValueSet.ofRanges(Range.range(BIGINT, 0L, true, 24L, true)), false),
                         regionKey, Domain.create(ValueSet.ofRanges(Range.range(BIGINT, 0L, true, 4L, true)), false))));
@@ -369,14 +371,14 @@ public class TestIcebergSplitSource
 
         // Write position delete file
         FileIO fileIo = FILE_IO_FACTORY.create(fileSystemFactory.create(SESSION));
-        PositionDeleteWriter<org.apache.iceberg.data.Record> writer = Parquet.writeDeletes(fileIo.newOutputFile("local:///delete_file_" + UUID.randomUUID()))
+        PositionDeleteWriter<Record> writer = Parquet.writeDeletes(fileIo.newOutputFile("local:///delete_file_" + UUID.randomUUID()))
                 .createWriterFunc(GenericParquetWriter::create)
                 .forTable(nationTable)
                 .overwrite()
                 .rowSchema(nationTable.schema())
                 .withSpec(PartitionSpec.unpartitioned())
                 .buildPositionWriter();
-        PositionDelete<org.apache.iceberg.data.Record> positionDelete = PositionDelete.create();
+        PositionDelete<Record> positionDelete = PositionDelete.create();
         PositionDelete<Record> record = positionDelete.set(dataFilePath, 0, GenericRecord.create(nationTable.schema()));
         try (Closeable ignored = writer) {
             writer.write(record);
@@ -416,7 +418,7 @@ public class TestIcebergSplitSource
                 TESTING_TYPE_MANAGER,
                 false,
                 0,
-                new DefaultCachingHostAddressProvider(),
+                new NoopSplitAffinityProvider(),
                 new InMemoryMetricsReporter(),
                 newDirectExecutorService())) {
             ImmutableList.Builder<IcebergSplit> builder = ImmutableList.builder();
@@ -441,9 +443,10 @@ public class TestIcebergSplitSource
                 schemaTableName.getSchemaName(),
                 schemaTableName.getTableName(),
                 TableType.DATA,
-                Optional.empty(),
+                OptionalLong.empty(),
                 SchemaParser.toJson(nationTable.schema()),
-                Optional.of(PartitionSpecParser.toJson(nationTable.spec())),
+                nationTable.spec() == null ? OptionalInt.empty() : OptionalInt.of(nationTable.spec().specId()),
+                transformValues(nationTable.specs(), PartitionSpecParser::toJson),
                 1,
                 unenforcedPredicate,
                 TupleDomain.all(),

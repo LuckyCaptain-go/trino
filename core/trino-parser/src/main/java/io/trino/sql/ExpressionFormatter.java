@@ -29,6 +29,7 @@ import io.trino.sql.tree.BooleanLiteral;
 import io.trino.sql.tree.Cast;
 import io.trino.sql.tree.CoalesceExpression;
 import io.trino.sql.tree.ComparisonExpression;
+import io.trino.sql.tree.CompositeIntervalQualifier;
 import io.trino.sql.tree.CurrentCatalog;
 import io.trino.sql.tree.CurrentDate;
 import io.trino.sql.tree.CurrentPath;
@@ -56,7 +57,8 @@ import io.trino.sql.tree.Identifier;
 import io.trino.sql.tree.IfExpression;
 import io.trino.sql.tree.InListExpression;
 import io.trino.sql.tree.InPredicate;
-import io.trino.sql.tree.IntervalDayTimeDataType;
+import io.trino.sql.tree.IntervalDataType;
+import io.trino.sql.tree.IntervalField;
 import io.trino.sql.tree.IntervalLiteral;
 import io.trino.sql.tree.IsNotNullPredicate;
 import io.trino.sql.tree.IsNullPredicate;
@@ -75,6 +77,7 @@ import io.trino.sql.tree.LocalTime;
 import io.trino.sql.tree.LocalTimestamp;
 import io.trino.sql.tree.LogicalExpression;
 import io.trino.sql.tree.LongLiteral;
+import io.trino.sql.tree.MethodCall;
 import io.trino.sql.tree.Node;
 import io.trino.sql.tree.NotExpression;
 import io.trino.sql.tree.NullIfExpression;
@@ -89,8 +92,10 @@ import io.trino.sql.tree.RowDataType;
 import io.trino.sql.tree.SearchedCaseExpression;
 import io.trino.sql.tree.SimpleCaseExpression;
 import io.trino.sql.tree.SimpleGroupBy;
+import io.trino.sql.tree.SimpleIntervalQualifier;
 import io.trino.sql.tree.SkipTo;
 import io.trino.sql.tree.SortItem;
+import io.trino.sql.tree.StaticMethodCall;
 import io.trino.sql.tree.StringLiteral;
 import io.trino.sql.tree.SubqueryExpression;
 import io.trino.sql.tree.SubscriptExpression;
@@ -110,8 +115,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.function.Function;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.sql.ReservedIdentifiers.reserved;
@@ -378,16 +385,37 @@ public final class ExpressionFormatter
                 return literalFormatter.get().apply(node);
             }
             String sign = (node.getSign() == IntervalLiteral.Sign.NEGATIVE) ? "-" : "";
-            StringBuilder builder = new StringBuilder()
-                    .append("INTERVAL ")
-                    .append(sign)
-                    .append("'").append(node.getValue()).append("' ")
-                    .append(node.getStartField());
+            return "INTERVAL " +
+                    sign +
+                    "'" + node.getValue() + "' " +
+                    process(node.qualifier(), context);
+        }
 
-            if (node.getEndField().isPresent()) {
-                builder.append(" TO ").append(node.getEndField().get());
+        @Override
+        protected String visitSimpleIntervalQualifier(SimpleIntervalQualifier node, Void context)
+        {
+            if (node.getField() instanceof IntervalField.Second(OptionalInt fractionalPrecision) && fractionalPrecision.isPresent()) {
+                checkArgument(node.getPrecision().isPresent(), "Leading precision is required when fractional precision is specified");
+                return "SECOND(" + node.getPrecision().getAsInt() + ", " + fractionalPrecision.getAsInt() + ")";
             }
-            return builder.toString();
+
+            return node.getField().name() + (node.getPrecision().isPresent() ? "(" + node.getPrecision().getAsInt() + ")" : "");
+        }
+
+        @Override
+        protected String visitCompositeIntervalQualifier(CompositeIntervalQualifier node, Void context)
+        {
+            StringBuilder result = new StringBuilder();
+            result.append(node.getFrom().name());
+            if (node.getPrecision().isPresent()) {
+                result.append("(").append(node.getPrecision().getAsInt()).append(")");
+            }
+            result.append(" TO ");
+            result.append(node.getTo().name());
+            if (node.getTo() instanceof IntervalField.Second(OptionalInt fractionalPrecision) && fractionalPrecision.isPresent()) {
+                result.append("(").append(fractionalPrecision.getAsInt()).append(")");
+            }
+            return result.toString();
         }
 
         @Override
@@ -477,6 +505,18 @@ public final class ExpressionFormatter
             }
 
             return builder.toString();
+        }
+
+        @Override
+        protected String visitStaticMethodCall(StaticMethodCall node, Void context)
+        {
+            return formatName(node.getType()) + "::" + formatExpression(node.getMethod()) + "(" + joinExpressions(node.getArguments()) + ")";
+        }
+
+        @Override
+        protected String visitMethodCall(MethodCall node, Void context)
+        {
+            return "(" + formatExpression(node.getReceiver()) + ")." + formatExpression(node.getMethod()) + "(" + joinExpressions(node.getArguments()) + ")";
         }
 
         @Override
@@ -766,18 +806,9 @@ public final class ExpressionFormatter
         }
 
         @Override
-        protected String visitIntervalDataType(IntervalDayTimeDataType node, Void context)
+        protected String visitIntervalDataType(IntervalDataType node, Void context)
         {
-            StringBuilder builder = new StringBuilder();
-
-            builder.append("INTERVAL ");
-            builder.append(node.getFrom());
-            if (node.getFrom() != node.getTo()) {
-                builder.append(" TO ")
-                        .append(node.getTo());
-            }
-
-            return builder.toString();
+            return "INTERVAL " + process(node.qualifier(), context);
         }
 
         @Override
@@ -1133,34 +1164,35 @@ public final class ExpressionFormatter
 
     static String formatGroupBy(List<GroupingElement> groupingElements)
     {
-        return groupingElements.stream().map(groupingElement -> {
-            String result = "";
-            if (groupingElement instanceof SimpleGroupBy) {
-                List<Expression> columns = groupingElement.getExpressions();
-                if (columns.size() == 1) {
-                    result = formatExpression(getOnlyElement(columns));
-                }
-                else {
-                    result = formatGroupingSet(columns);
-                }
-            }
-            else if (groupingElement instanceof AutoGroupBy) {
-                result = "AUTO";
-            }
-            else if (groupingElement instanceof GroupingSets groupingSets) {
-                String type = switch (groupingSets.getType()) {
-                    case EXPLICIT -> "GROUPING SETS";
-                    case CUBE -> "CUBE";
-                    case ROLLUP -> "ROLLUP";
-                };
+        return groupingElements.stream()
+                .map(groupingElement -> {
+                    String result = "";
+                    if (groupingElement instanceof SimpleGroupBy) {
+                        List<Expression> columns = groupingElement.getExpressions();
+                        if (columns.size() == 1) {
+                            result = formatExpression(getOnlyElement(columns));
+                        }
+                        else {
+                            result = formatGroupingSet(columns);
+                        }
+                    }
+                    else if (groupingElement instanceof AutoGroupBy) {
+                        result = "AUTO";
+                    }
+                    else if (groupingElement instanceof GroupingSets groupingSets) {
+                        String type = switch (groupingSets.getType()) {
+                            case EXPLICIT -> "GROUPING SETS";
+                            case CUBE -> "CUBE";
+                            case ROLLUP -> "ROLLUP";
+                        };
 
-                result = groupingSets.getSets().stream()
-                        .map(ExpressionFormatter::formatGroupingSet)
-                        .collect(joining(", ", type + " (", ")"));
-            }
-            return result;
-        })
-        .collect(joining(", "));
+                        result = groupingSets.getSets().stream()
+                                .map(ExpressionFormatter::formatGroupingSet)
+                                .collect(joining(", ", type + " (", ")"));
+                    }
+                    return result;
+                })
+                .collect(joining(", "));
     }
 
     private static String formatGroupingSet(List<Expression> groupingSet)

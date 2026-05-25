@@ -143,6 +143,7 @@ import org.apache.avro.SchemaParseException;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -396,8 +397,8 @@ public class HiveMetadata
     public static final String MODIFYING_NON_TRANSACTIONAL_TABLE_MESSAGE = "Modifying Hive table rows is only supported for transactional tables";
 
     private static final RetryPolicy<?> DELETE_RETRY_POLICY = RetryPolicy.builder()
-            .withDelay(java.time.Duration.ofSeconds(1))
-            .withMaxDuration(java.time.Duration.ofSeconds(30))
+            .withDelay(Duration.ofSeconds(1))
+            .withMaxDuration(Duration.ofSeconds(30))
             .withMaxAttempts(10)
             .build();
 
@@ -851,7 +852,7 @@ public class HiveMetadata
     public Map<SchemaTableName, RelationType> getRelationTypes(ConnectorSession session, Optional<String> optionalSchemaName)
     {
         return streamTables(session, optionalSchemaName)
-                .collect(toImmutableMap(TableInfo::tableName, tableInfo -> tableInfo.extendedRelationType().toRelationType(), (ignore, second) -> second));
+                .collect(toImmutableMap(TableInfo::tableName, tableInfo -> tableInfo.extendedRelationType().toRelationType(), (_, second) -> second));
     }
 
     private Stream<TableInfo> streamTables(ConnectorSession session, Optional<String> optionalSchemaName)
@@ -977,7 +978,7 @@ public class HiveMetadata
         }
         return optionalTable
                 .filter(table -> !hideDeltaLakeTables || !isDeltaLakeTable(table))
-                .map(table -> ImmutableList.of(tableName))
+                .map(_ -> ImmutableList.of(tableName))
                 .orElseGet(ImmutableList::of);
     }
 
@@ -1525,7 +1526,7 @@ public class HiveMetadata
         HiveTableHandle handle = (HiveTableHandle) tableHandle;
         failIfAvroSchemaIsSet(handle);
 
-        metastore.addColumn(handle.getSchemaName(), handle.getTableName(), column.getName(), toHiveType(column.getType()), column.getComment());
+        metastore.addColumn(handle.getSchemaName(), handle.getTableName(), column.getName(), toHiveType(column.getType()), column.getComment().orElse(null));
     }
 
     @Override
@@ -1916,7 +1917,7 @@ public class HiveMetadata
         }
 
         Map<String, Type> columnTypes = handle.getInputColumns().stream()
-                .collect(toImmutableMap(HiveColumnHandle::getName, column -> typeManager.getType(getTypeSignature(column.getHiveType()))));
+                .collect(toImmutableMap(HiveColumnHandle::getName, column -> getType(column.getHiveType(), typeManager, getTimestampPrecision(session))));
         Map<List<String>, ComputedStatistics> partitionComputedStatistics = createComputedStatisticsToPartitionMap(computedStatistics, handle.getPartitionedBy(), columnTypes);
 
         PartitionStatistics tableStatistics;
@@ -2295,7 +2296,7 @@ public class HiveMetadata
                 .map(Column::getName)
                 .collect(toImmutableList());
         Map<String, Type> columnTypes = handle.getInputColumns().stream()
-                .collect(toImmutableMap(HiveColumnHandle::getName, column -> typeManager.getType(getTypeSignature(column.getHiveType()))));
+                .collect(toImmutableMap(HiveColumnHandle::getName, column -> getType(column.getHiveType(), typeManager, getTimestampPrecision(session))));
         Map<List<String>, ComputedStatistics> partitionComputedStatistics = createComputedStatisticsToPartitionMap(computedStatistics, partitionedBy, columnTypes);
 
         ImmutableList.Builder<PartitionUpdateInfo> partitionUpdateInfosBuilder = ImmutableList.builder();
@@ -2632,13 +2633,13 @@ public class HiveMetadata
     }
 
     @Override
-    public void finishTableExecute(ConnectorSession session, ConnectorTableExecuteHandle tableExecuteHandle, Collection<Slice> fragments, List<Object> splitSourceInfo)
+    public Map<String, Long> finishTableExecute(ConnectorSession session, ConnectorTableExecuteHandle tableExecuteHandle, Collection<Slice> fragments, List<Object> splitSourceInfo)
     {
         String procedureName = ((HiveTableExecuteHandle) tableExecuteHandle).getProcedureName();
 
         if (procedureName.equals(OptimizeTableProcedure.NAME)) {
             finishOptimize(session, tableExecuteHandle, fragments, splitSourceInfo);
-            return;
+            return ImmutableMap.of();
         }
         throw new IllegalArgumentException("Unknown procedure '" + procedureName + "'");
     }
@@ -3140,7 +3141,7 @@ public class HiveMetadata
         TupleDomain<ColumnHandle> unenforcedConstraint = partitionResult.getEffectivePredicate();
         if (newHandle.getPartitions().isPresent()) {
             List<HiveColumnHandle> partitionColumns = partitionResult.getPartitionColumns();
-            unenforcedConstraint = partitionResult.getEffectivePredicate().filter((column, domain) -> !partitionColumns.contains(column));
+            unenforcedConstraint = partitionResult.getEffectivePredicate().filter((column, _) -> !partitionColumns.contains(column));
         }
 
         return Optional.of(new ConstraintApplicationResult<>(newHandle, unenforcedConstraint, constraint.getExpression(), false));
@@ -3782,7 +3783,7 @@ public class HiveMetadata
         }
 
         List<Column> dataColumns = tableMetadata.getColumns().stream()
-                .map(columnMetadata -> new Column(columnMetadata.getName(), toHiveType(columnMetadata.getType()), Optional.ofNullable(columnMetadata.getComment()), ImmutableMap.of()))
+                .map(columnMetadata -> new Column(columnMetadata.getName(), toHiveType(columnMetadata.getType()), columnMetadata.getComment(), ImmutableMap.of()))
                 .collect(toImmutableList());
         if (!isSupportedBucketing(bucketInfo.get().bucketedBy(), dataColumns, tableMetadata.getTable().getTableName())) {
             throw new TrinoException(NOT_SUPPORTED, "Cannot create a table bucketed on an unsupported type");
@@ -3835,7 +3836,7 @@ public class HiveMetadata
                     toHiveType(column.getType()),
                     column.getType(),
                     columnType,
-                    Optional.ofNullable(column.getComment())));
+                    column.getComment()));
             ordinal++;
         }
 

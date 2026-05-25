@@ -54,6 +54,7 @@ import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.DecimalType.createDecimalType;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
+import static io.trino.spi.type.NumberType.NUMBER;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
 import static io.trino.spi.type.TimeType.TIME_MICROS;
@@ -127,7 +128,10 @@ public abstract class BaseSingleStoreTypeMapping
                 .addRoundTrip("bit", "b'1'", BOOLEAN, "true")
                 .addRoundTrip("bit", "b'0'", BOOLEAN, "false")
                 .addRoundTrip("bit", "NULL", BOOLEAN, "CAST(NULL AS BOOLEAN)")
+                .addRoundTrip("bit(1)", "b'1'", BOOLEAN, "true")
                 .execute(getQueryRunner(), singleStoreCreateAndInsert("tpch.test_bit"));
+
+        testUnsupportedDataType("bit(10)");
     }
 
     @Test
@@ -279,7 +283,38 @@ public abstract class BaseSingleStoreTypeMapping
     @Test
     public void testDecimalExceedingPrecisionMax()
     {
-        testUnsupportedDataType("decimal(50,0)");
+        // Test that DECIMAL types with precision > 38 map to NUMBER type
+        // SingleStore supports DECIMAL up to precision 65 with scale up to 30
+
+        // Test precision 40, scale 5 (just above the 38 threshold)
+        SqlDataTypeTest.create()
+                .addRoundTrip("decimal(40,5)", "12345678901234567890123456789012345.12345", NUMBER, "NUMBER '12345678901234567890123456789012345.12345'")
+                .addRoundTrip("decimal(40,5)", "-12345678901234567890123456789012345.12345", NUMBER, "NUMBER '-12345678901234567890123456789012345.12345'")
+                .addRoundTrip("decimal(40,5)", "123.45", NUMBER, "NUMBER '123.45'")
+                .addRoundTrip("decimal(40,5)", "-123.45", NUMBER, "NUMBER '-123.45'")
+                .addRoundTrip("decimal(40,5)", "NULL", NUMBER, "CAST(NULL AS NUMBER)")
+                .execute(getQueryRunner(), singleStoreCreateAndInsert("tpch.test_decimal_exceeding_precision_max_p40"));
+
+        // Test precision 50, scale 0
+        SqlDataTypeTest.create()
+                .addRoundTrip("decimal(50,0)", "12345678901234567890123456789012345678901234567890", NUMBER, "NUMBER '12345678901234567890123456789012345678901234567890'")
+                .addRoundTrip("decimal(50,0)", "-12345678901234567890123456789012345678901234567890", NUMBER, "NUMBER '-12345678901234567890123456789012345678901234567890'")
+                .addRoundTrip("decimal(50,0)", "NULL", NUMBER, "CAST(NULL AS NUMBER)")
+                .execute(getQueryRunner(), singleStoreCreateAndInsert("tpch.test_decimal_exceeding_precision_max_p50"));
+
+        // Test precision 60, scale 10
+        SqlDataTypeTest.create()
+                .addRoundTrip("decimal(60,10)", "12345678901234567890123456789012345678901234567890.1234567890", NUMBER, "NUMBER '12345678901234567890123456789012345678901234567890.1234567890'")
+                .addRoundTrip("decimal(60,10)", "-12345678901234567890123456789012345678901234567890.1234567890", NUMBER, "NUMBER '-12345678901234567890123456789012345678901234567890.1234567890'")
+                .addRoundTrip("decimal(60,10)", "NULL", NUMBER, "CAST(NULL AS NUMBER)")
+                .execute(getQueryRunner(), singleStoreCreateAndInsert("tpch.test_decimal_exceeding_precision_max_p60"));
+
+        // Test precision 65 (SingleStore's max), scale 30
+        SqlDataTypeTest.create()
+                .addRoundTrip("decimal(65,30)", "12345678901234567890123456789012345.123456789012345678901234567890", NUMBER, "NUMBER '12345678901234567890123456789012345.123456789012345678901234567890'")
+                .addRoundTrip("decimal(65,30)", "-12345678901234567890123456789012345.123456789012345678901234567890", NUMBER, "NUMBER '-12345678901234567890123456789012345.123456789012345678901234567890'")
+                .addRoundTrip("decimal(65,30)", "NULL", NUMBER, "CAST(NULL AS NUMBER)")
+                .execute(getQueryRunner(), singleStoreCreateAndInsert("tpch.test_decimal_exceeding_precision_max_p65"));
     }
 
     @Test
@@ -521,8 +556,10 @@ public abstract class BaseSingleStoreTypeMapping
                 .addRoundTrip("text " + CHARACTER_SET_UTF8, sampleUnicodeLiteral, createVarcharType(65535), "CAST(" + sampleUnicodeLiteral + " AS varchar(65535))")
                 .addRoundTrip("mediumtext " + CHARACTER_SET_UTF8, sampleUnicodeLiteral, createVarcharType(16777215), "CAST(" + sampleUnicodeLiteral + " AS varchar(16777215))")
                 .addRoundTrip("longtext " + CHARACTER_SET_UTF8, sampleUnicodeLiteral, createUnboundedVarcharType(), "CAST(" + sampleUnicodeLiteral + " AS varchar)")
-                .addRoundTrip("varchar(" + sampleUnicodeLiteral.length() + ") " + CHARACTER_SET_UTF8, sampleUnicodeLiteral,
-                        createVarcharType(sampleUnicodeLiteral.length()), "CAST(" + sampleUnicodeLiteral + " AS varchar(" + sampleUnicodeLiteral.length() + "))")
+                .addRoundTrip("varchar(" + sampleUnicodeLiteral.length() + ") " + CHARACTER_SET_UTF8,
+                        sampleUnicodeLiteral,
+                        createVarcharType(sampleUnicodeLiteral.length()),
+                        "CAST(" + sampleUnicodeLiteral + " AS varchar(" + sampleUnicodeLiteral.length() + "))")
                 .addRoundTrip("varchar(32) " + CHARACTER_SET_UTF8, sampleUnicodeLiteral, createVarcharType(32), "CAST(" + sampleUnicodeLiteral + " AS varchar(32))")
                 .addRoundTrip("varchar(20000) " + CHARACTER_SET_UTF8, sampleUnicodeLiteral, createVarcharType(20000), "CAST(" + sampleUnicodeLiteral + " AS varchar(20000))")
                 .execute(getQueryRunner(), singleStoreCreateAndInsert("tpch.singlestore_test_parameterized_varchar_unicode"));

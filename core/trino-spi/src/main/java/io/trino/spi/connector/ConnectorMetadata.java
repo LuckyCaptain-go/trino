@@ -44,6 +44,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -99,7 +100,7 @@ public interface ConnectorMetadata
      * or is not a table (e.g. is a view, or a materialized view).
      *
      * @throws TrinoException implementation can throw this exception when {@code tableName} refers to a table that
-     * cannot be queried.
+     *         cannot be queried.
      * @see #getView(ConnectorSession, SchemaTableName)
      * @see #getMaterializedView(ConnectorSession, SchemaTableName)
      */
@@ -138,6 +139,19 @@ public interface ConnectorMetadata
         throw new TrinoException(NOT_SUPPORTED, "This connector does not support table procedures");
     }
 
+    /**
+     * Returns source table columns required to execute a table procedure.
+     * <p>
+     * Connectors may override this to return the exact source-column set needed for the procedure.
+     * The default implementation returns handles for all non-hidden columns.
+     */
+    default Set<ColumnHandle> getColumnHandlesForTableExecute(ConnectorSession connectorSession, ConnectorTableHandle tableHandle, ConnectorTableExecuteHandle connectorTableExecuteHandle)
+    {
+        return getColumnHandles(connectorSession, tableHandle).values().stream()
+                .filter(column -> !getColumnMetadata(connectorSession, tableHandle, column).isHidden())
+                .collect(toUnmodifiableSet());
+    }
+
     default Optional<ConnectorTableLayout> getLayoutForTableExecute(ConnectorSession session, ConnectorTableExecuteHandle tableExecuteHandle)
     {
         return Optional.empty();
@@ -155,8 +169,9 @@ public interface ConnectorMetadata
      * Finish table execute
      *
      * @param fragments all fragments returned by {@link ConnectorPageSink#finish()}
+     * @return procedure execution metrics that will be populated in the query output
      */
-    default void finishTableExecute(ConnectorSession session, ConnectorTableExecuteHandle tableExecuteHandle, Collection<Slice> fragments, List<Object> tableExecuteState)
+    default Map<String, Long> finishTableExecute(ConnectorSession session, ConnectorTableExecuteHandle tableExecuteHandle, Collection<Slice> fragments, List<Object> tableExecuteState)
     {
         throw new TrinoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata getTableHandleForExecute() is implemented without finishTableExecute()");
     }
@@ -362,12 +377,12 @@ public interface ConnectorMetadata
                 });
 
         // Collect column metadata from views. if table and view names overlap, the view wins
-        for (Map.Entry<SchemaTableName, ConnectorViewDefinition> entry : getViews(session, schemaName).entrySet()) {
+        for (Entry<SchemaTableName, ConnectorViewDefinition> entry : getViews(session, schemaName).entrySet()) {
             relationColumns.put(entry.getKey(), RelationColumnsMetadata.forView(entry.getKey(), entry.getValue().getColumns()));
         }
 
         // if view and materialized view names overlap, the materialized view wins
-        for (Map.Entry<SchemaTableName, ConnectorMaterializedViewDefinition> entry : getMaterializedViews(session, schemaName).entrySet()) {
+        for (Entry<SchemaTableName, ConnectorMaterializedViewDefinition> entry : getMaterializedViews(session, schemaName).entrySet()) {
             relationColumns.put(entry.getKey(), RelationColumnsMetadata.forMaterializedView(entry.getKey(), entry.getValue().getColumns()));
         }
 
@@ -864,7 +879,8 @@ public interface ConnectorMetadata
             Collection<ComputedStatistics> computedStatistics,
             List<ConnectorTableHandle> sourceTableHandles,
             boolean hasForeignSourceTables,
-            boolean hasSourceTableFunctions)
+            boolean hasSourceTableFunctions,
+            boolean hasNonDeterministicFunctions)
     {
         throw new TrinoException(GENERIC_INTERNAL_ERROR, "ConnectorMetadata beginRefreshMaterializedView() is implemented without finishRefreshMaterializedView()");
     }
@@ -1811,7 +1827,7 @@ public interface ConnectorMetadata
 
     /**
      * @return true if reading a subset of columns from a given table separately from reading a complement of the subset has similar or better
-     * performance as reading this table.
+     *         performance as reading this table.
      */
     default boolean allowSplittingReadIntoMultipleSubQueries(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
@@ -1826,5 +1842,29 @@ public interface ConnectorMetadata
     default WriterScalingOptions getInsertWriterScalingOptions(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
         return WriterScalingOptions.DISABLED;
+    }
+
+    /**
+     * Returns credentials that can be used in {@link ConnectorPageSourceProvider}.
+     */
+    default Optional<ConnectorTableCredentials> getTableCredentials(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        return Optional.empty();
+    }
+
+    /**
+     * Returns credentials that can be used in {@link ConnectorPageSinkProvider}.
+     */
+    default Optional<ConnectorTableCredentials> getTableCredentials(ConnectorSession session, ConnectorWritableTableHandle tableHandle)
+    {
+        return Optional.empty();
+    }
+
+    /**
+     * Returns {@link ConnectorTableCredentials} for specified {@link ConnectorTableFunctionHandle} or {@link Optional#empty} if there are no credentials.
+     */
+    default Optional<ConnectorTableCredentials> getTableCredentials(ConnectorSession session, ConnectorTableFunctionHandle tableFunctionHandle)
+    {
+        return Optional.empty();
     }
 }

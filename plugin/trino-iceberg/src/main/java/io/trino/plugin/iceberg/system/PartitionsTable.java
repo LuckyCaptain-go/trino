@@ -31,6 +31,7 @@ import io.trino.spi.type.TypeManager;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.PartitionField;
+import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableScan;
 import org.apache.iceberg.io.CloseableIterable;
@@ -43,7 +44,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.stream.Stream;
@@ -51,6 +54,7 @@ import java.util.stream.Stream;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.plugin.iceberg.IcebergTypes.convertIcebergValueToTrino;
+import static io.trino.plugin.iceberg.IcebergUtil.getFileScanPartitionSpec;
 import static io.trino.plugin.iceberg.IcebergUtil.getIdentityPartitions;
 import static io.trino.plugin.iceberg.IcebergUtil.primitiveFieldTypes;
 import static io.trino.plugin.iceberg.StructLikeWrapperWithFieldIdToIndex.createStructLikeWrapper;
@@ -69,7 +73,7 @@ public class PartitionsTable
 {
     private final TypeManager typeManager;
     private final Table icebergTable;
-    private final Optional<Long> snapshotId;
+    private final OptionalLong snapshotId;
     private final Map<Integer, Type.PrimitiveType> idToTypeMapping;
     private final List<NestedField> nonPartitionPrimitiveColumns;
     private final Optional<IcebergPartitionColumn> partitionColumnType;
@@ -80,7 +84,7 @@ public class PartitionsTable
     private final ConnectorTableMetadata connectorTableMetadata;
     private final ExecutorService executor;
 
-    public PartitionsTable(SchemaTableName tableName, TypeManager typeManager, Table icebergTable, Optional<Long> snapshotId, ExecutorService executor)
+    public PartitionsTable(SchemaTableName tableName, TypeManager typeManager, Table icebergTable, OptionalLong snapshotId, ExecutorService executor)
     {
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.icebergTable = requireNonNull(icebergTable, "icebergTable is null");
@@ -163,7 +167,7 @@ public class PartitionsTable
             return new InMemoryRecordSet(resultTypes, ImmutableList.of()).cursor();
         }
         TableScan tableScan = icebergTable.newScan()
-                .useSnapshot(snapshotId.get())
+                .useSnapshot(snapshotId.getAsLong())
                 .includeColumnStats()
                 .planWith(executor);
         // TODO make the cursor lazy
@@ -173,19 +177,21 @@ public class PartitionsTable
     private Map<StructLikeWrapperWithFieldIdToIndex, IcebergStatistics> getStatisticsByPartition(TableScan tableScan)
     {
         try (CloseableIterable<FileScanTask> fileScanTasks = tableScan.planFiles()) {
+            Map<Integer, PartitionSpec> specsById = icebergTable.specs();
             Map<StructLikeWrapperWithFieldIdToIndex, IcebergStatistics.Builder> partitions = new HashMap<>();
             for (FileScanTask fileScanTask : fileScanTasks) {
                 DataFile dataFile = fileScanTask.file();
-                StructLikeWrapperWithFieldIdToIndex structLikeWrapperWithFieldIdToIndex = createStructLikeWrapper(fileScanTask);
+                PartitionSpec spec = getFileScanPartitionSpec(fileScanTask, specsById);
+                StructLikeWrapperWithFieldIdToIndex structLikeWrapperWithFieldIdToIndex = createStructLikeWrapper(spec, dataFile.partition());
 
                 partitions.computeIfAbsent(
-                        structLikeWrapperWithFieldIdToIndex,
-                        _ -> new IcebergStatistics.Builder(icebergTable.schema().columns(), typeManager))
-                        .acceptDataFile(dataFile, fileScanTask.spec());
+                                structLikeWrapperWithFieldIdToIndex,
+                                _ -> new IcebergStatistics.Builder(icebergTable.schema().columns(), typeManager))
+                        .acceptDataFile(dataFile, spec);
             }
 
             return partitions.entrySet().stream()
-                    .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().build()));
+                    .collect(toImmutableMap(Entry::getKey, entry -> entry.getValue().build()));
         }
         catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -201,7 +207,7 @@ public class PartitionsTable
 
         ImmutableList.Builder<List<Object>> records = ImmutableList.builder();
 
-        for (Map.Entry<StructLikeWrapperWithFieldIdToIndex, IcebergStatistics> partitionEntry : partitionStatistics.entrySet()) {
+        for (Entry<StructLikeWrapperWithFieldIdToIndex, IcebergStatistics> partitionEntry : partitionStatistics.entrySet()) {
             StructLikeWrapperWithFieldIdToIndex partitionStruct = partitionEntry.getKey();
             IcebergStatistics icebergStatistics = partitionEntry.getValue();
             List<Object> row = new ArrayList<>();

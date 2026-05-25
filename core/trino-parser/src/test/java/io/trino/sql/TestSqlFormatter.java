@@ -504,31 +504,36 @@ public class TestSqlFormatter
                 new AddColumn(
                         new NodeLocation(1, 1),
                         QualifiedName.of("foo", "t"),
-                        new ColumnDefinition(QualifiedName.of("c"),
+                        new ColumnDefinition(
+                                QualifiedName.of("c"),
                                 new GenericDataType(new NodeLocation(1, 1), new Identifier("VARCHAR", false), ImmutableList.of()),
                                 true,
                                 emptyList(),
                                 Optional.empty()),
                         Optional.empty(),
-                        false, false)))
+                        false,
+                        false)))
                 .isEqualTo("ALTER TABLE foo.t ADD COLUMN c VARCHAR");
         assertThat(formatSql(
                 new AddColumn(
                         new NodeLocation(1, 1),
                         QualifiedName.of("foo", "t"),
-                        new ColumnDefinition(QualifiedName.of("c"),
+                        new ColumnDefinition(
+                                QualifiedName.of("c"),
                                 new GenericDataType(new NodeLocation(1, 1), new Identifier("VARCHAR", false), ImmutableList.of()),
                                 true,
                                 emptyList(),
                                 Optional.of("攻殻機動隊")),
                         Optional.empty(),
-                        false, false)))
+                        false,
+                        false)))
                 .isEqualTo("ALTER TABLE foo.t ADD COLUMN c VARCHAR COMMENT '攻殻機動隊'");
         assertThat(formatSql(
                 new AddColumn(
                         new NodeLocation(1, 1),
                         QualifiedName.of("foo", "t"),
-                        new ColumnDefinition(QualifiedName.of("c"),
+                        new ColumnDefinition(
+                                QualifiedName.of("c"),
                                 new GenericDataType(new NodeLocation(1, 1), new Identifier("VARCHAR", false), ImmutableList.of()),
                                 true,
                                 emptyList(),
@@ -541,7 +546,8 @@ public class TestSqlFormatter
                 new AddColumn(
                         new NodeLocation(1, 1),
                         QualifiedName.of("foo", "t"),
-                        new ColumnDefinition(QualifiedName.of("c"),
+                        new ColumnDefinition(
+                                QualifiedName.of("c"),
                                 new GenericDataType(new NodeLocation(1, 1), new Identifier("VARCHAR", false), ImmutableList.of()),
                                 true,
                                 emptyList(),
@@ -554,7 +560,8 @@ public class TestSqlFormatter
                 new AddColumn(
                         new NodeLocation(1, 1),
                         QualifiedName.of("foo", "t"),
-                        new ColumnDefinition(QualifiedName.of("c"),
+                        new ColumnDefinition(
+                                QualifiedName.of("c"),
                                 new GenericDataType(new NodeLocation(1, 1), new Identifier("VARCHAR", false), ImmutableList.of()),
                                 true,
                                 emptyList(),
@@ -674,6 +681,41 @@ public class TestSqlFormatter
                         ImmutableList.of())))
                 .isEqualTo("EXECUTE IMMEDIATE\n" +
                         "'SELECT * FROM foo WHERE col1 = ''攻殻機動隊'''");
+    }
+
+    @Test
+    void testMerge()
+    {
+        assertThat(formatSql(new Merge(
+                new NodeLocation(1, 1),
+                new Table(new NodeLocation(1, 1), QualifiedName.of("t")),
+                table(QualifiedName.of("changes")),
+                new BooleanLiteral(new NodeLocation(1, 1), "true"),
+                ImmutableList.of(new MergeDelete(new NodeLocation(1, 1), Optional.empty())))))
+                .isEqualTo(
+                        """
+                        MERGE INTO t
+                           USING changes
+                           ON true
+                        WHEN MATCHED
+                           THEN DELETE\
+                        """);
+
+        // with alias for the source table
+        assertThat(formatSql(new Merge(
+                new NodeLocation(1, 1),
+                new Table(new NodeLocation(1, 1), QualifiedName.of("t")),
+                aliased(table(QualifiedName.of("changes")), "s"),
+                new BooleanLiteral(new NodeLocation(1, 1), "true"),
+                ImmutableList.of(new MergeDelete(new NodeLocation(1, 1), Optional.empty())))))
+                .isEqualTo(
+                        """
+                        MERGE INTO t
+                           USING changes s
+                           ON true
+                        WHEN MATCHED
+                           THEN DELETE\
+                        """);
     }
 
     @Test

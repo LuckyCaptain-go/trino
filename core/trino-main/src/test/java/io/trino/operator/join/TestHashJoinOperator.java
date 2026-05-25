@@ -43,6 +43,9 @@ import io.trino.operator.index.PageBufferOperator.PageBufferOperatorFactory;
 import io.trino.operator.join.JoinTestUtils.BuildSideSetup;
 import io.trino.operator.join.JoinTestUtils.DummySpillerFactory;
 import io.trino.operator.join.JoinTestUtils.TestInternalJoinFilterFunction;
+import io.trino.operator.join.spilling.HashBuilderOperator;
+import io.trino.operator.join.spilling.PartitionedConsumption;
+import io.trino.operator.join.spilling.PartitionedLookupSourceFactory;
 import io.trino.plugin.base.metrics.TDigestHistogram;
 import io.trino.spi.Page;
 import io.trino.spi.block.RunLengthEncodedBlock;
@@ -227,7 +230,7 @@ public class TestHashJoinOperator
         // force a yield for every match
         AtomicInteger filterFunctionCalls = new AtomicInteger();
         InternalJoinFilterFunction filterFunction = new TestInternalJoinFilterFunction(
-                (leftPosition, leftPage, rightPosition, rightPage) -> {
+                (_, _, _, _) -> {
                     filterFunctionCalls.incrementAndGet();
                     driverContext.getYieldSignal().forceYieldForTesting();
                     return true;
@@ -369,7 +372,7 @@ public class TestHashJoinOperator
         // force a yield for every match in LookupJoinOperator, set called to true after first
         AtomicBoolean called = new AtomicBoolean(false);
         InternalJoinFilterFunction filterFunction = new TestInternalJoinFilterFunction(
-                (leftPosition, leftPage, rightPosition, rightPage) -> {
+                (_, _, _, _) -> {
                     called.set(true);
                     joinDriverContext.getYieldSignal().forceYieldForTesting();
                     return true;
@@ -437,7 +440,8 @@ public class TestHashJoinOperator
             PageBuffer pageBuffer = new PageBuffer(10);
             PageBufferOperatorFactory pageBufferOperatorFactory = new PageBufferOperatorFactory(18, new PlanNodeId("pageBuffer"), pageBuffer, "PageBuffer");
 
-            Driver joinDriver = Driver.createDriver(joinDriverContext,
+            Driver joinDriver = Driver.createDriver(
+                    joinDriverContext,
                     valuesOperatorFactory.createOperator(joinDriverContext),
                     joinOperator,
                     pageBufferOperatorFactory.createOperator(joinDriverContext));
@@ -830,7 +834,7 @@ public class TestHashJoinOperator
         TaskContext taskContext = createTaskContext();
 
         InternalJoinFilterFunction filterFunction = new TestInternalJoinFilterFunction(
-                (leftPosition, leftPage, rightPosition, rightPage) -> BIGINT.getLong(rightPage.getBlock(1), rightPosition) >= 1025);
+                (_, _, rightPosition, rightPage) -> BIGINT.getLong(rightPage.getBlock(1), rightPosition) >= 1025);
 
         // build factory
         List<Type> buildTypes = ImmutableList.of(VARCHAR, BIGINT, BIGINT);
@@ -933,7 +937,7 @@ public class TestHashJoinOperator
         TaskContext taskContext = createTaskContext();
 
         InternalJoinFilterFunction filterFunction = new TestInternalJoinFilterFunction(
-                (leftPosition, leftPage, rightPosition, rightPage) -> VARCHAR.getSlice(rightPage.getBlock(0), rightPosition).toStringAscii().equals("a"));
+                (_, _, rightPosition, rightPage) -> VARCHAR.getSlice(rightPage.getBlock(0), rightPosition).toStringAscii().equals("a"));
 
         // build factory
         List<Type> buildTypes = ImmutableList.of(VARCHAR);
@@ -1031,7 +1035,7 @@ public class TestHashJoinOperator
         TaskContext taskContext = createTaskContext();
 
         InternalJoinFilterFunction filterFunction = new TestInternalJoinFilterFunction(
-                (leftPosition, leftPage, rightPosition, rightPage) ->
+                (_, _, rightPosition, rightPage) ->
                         ImmutableSet.of("a", "c").contains(VARCHAR.getSlice(rightPage.getBlock(0), rightPosition).toStringAscii()));
 
         // build factory
@@ -1130,7 +1134,7 @@ public class TestHashJoinOperator
         TaskContext taskContext = createTaskContext();
 
         InternalJoinFilterFunction filterFunction = new TestInternalJoinFilterFunction(
-                (leftPosition, leftPage, rightPosition, rightPage) ->
+                (_, _, rightPosition, rightPage) ->
                         ImmutableSet.of("a", "c").contains(VARCHAR.getSlice(rightPage.getBlock(0), rightPosition).toStringAscii()));
 
         // build factory
@@ -1218,7 +1222,7 @@ public class TestHashJoinOperator
                 ImmutableList.of(0),
                 ImmutableList.of(1),
                 Optional.empty(),
-                Optional.empty(),
+                OptionalInt.empty(),
                 ImmutableList.of(),
                 10_000,
                 new PagesIndex.TestingFactory(false),
@@ -1294,7 +1298,7 @@ public class TestHashJoinOperator
                 ImmutableList.of(0),
                 ImmutableList.of(0),
                 Optional.empty(),
-                Optional.empty(),
+                OptionalInt.empty(),
                 ImmutableList.of(),
                 10_000,
                 new PagesIndex.TestingFactory(false),
@@ -1365,7 +1369,7 @@ public class TestHashJoinOperator
                 ImmutableList.of(0),
                 ImmutableList.of(0),
                 Optional.empty(),
-                Optional.empty(),
+                OptionalInt.empty(),
                 ImmutableList.of(),
                 10_000,
                 new PagesIndex.TestingFactory(false),

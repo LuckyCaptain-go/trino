@@ -155,7 +155,7 @@ public class TestPostgreSqlConnectorTest
         return new TestTable(
                 onRemoteDatabase(),
                 "tpch.test_unsupported_column_present",
-                "(one bigint, two decimal(50,0), three varchar(10))");
+                "(one bigint, two interval, three varchar(10))");
     }
 
     @Test
@@ -566,8 +566,10 @@ public class TestPostgreSqlConnectorTest
                                     .equals(ImmutableList.of(
                                             Range.range(
                                                     createVarcharType(25),
-                                                    utf8Slice("POLAND"), true,
-                                                    utf8Slice("VIETNAM"), true)));
+                                                    utf8Slice("POLAND"),
+                                                    true,
+                                                    utf8Slice("VIETNAM"),
+                                                    true)));
                         },
                         TupleDomain.all(),
                         ImmutableMap.of())));
@@ -597,7 +599,8 @@ public class TestPostgreSqlConnectorTest
                 node(JoinNode.class,
                         node(TableScanNode.class),
                         exchange(ExchangeNode.Scope.LOCAL,
-                                exchange(ExchangeNode.Scope.REMOTE, ExchangeNode.Type.REPLICATE,
+                                exchange(ExchangeNode.Scope.REMOTE,
+                                        ExchangeNode.Type.REPLICATE,
                                         node(TableScanNode.class))));
 
         Session sessionWithCollatePushdown = Session.builder(getSession())
@@ -805,6 +808,34 @@ public class TestPostgreSqlConnectorTest
         assertThat(query("SELECT * FROM nation WHERE name = 'ALGERIA' OR regionkey = 4")).isFullyPushedDown();
         assertThat(query("SELECT * FROM nation WHERE name IS NULL OR regionkey = 4")).isFullyPushedDown();
         assertThat(query("SELECT * FROM nation WHERE name = NULL OR regionkey = 4")).isFullyPushedDown();
+    }
+
+    @Test
+    public void testCoalescePredicatePushdown()
+    {
+        assertThat(query("SELECT * FROM nation WHERE COALESCE(nationkey, 1) = nationkey"))
+                .isFullyPushedDown();
+        assertThat(query("SELECT * FROM nation WHERE COALESCE(nationkey, regionkey, 1) = nationkey"))
+                .isFullyPushedDown();
+
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_coalesce_predicate_pushdown",
+                "(a_varchar varchar, b_varchar varchar, c_varchar varchar)",
+                List.of(
+                        "NULL, NULL, 'third not null'",
+                        "'1', '2', 'first and second not null'",
+                        "NULL, '2', 'second not null'"))) {
+            assertThat(query("SELECT c_varchar FROM " + table.getName() + " WHERE COALESCE(a_varchar, b_varchar) = '1'"))
+                    .matches("VALUES VARCHAR 'first and second not null'")
+                    .isFullyPushedDown();
+            assertThat(query("SELECT c_varchar FROM " + table.getName() + " WHERE COALESCE(a_varchar, b_varchar) = '2'"))
+                    .matches("VALUES VARCHAR 'second not null'")
+                    .isFullyPushedDown();
+            assertThat(query("SELECT c_varchar FROM " + table.getName() + " WHERE COALESCE(a_varchar, b_varchar, c_varchar) = 'third not null'"))
+                    .matches("VALUES VARCHAR 'third not null'")
+                    .isFullyPushedDown();
+        }
     }
 
     @Test
@@ -1235,15 +1266,13 @@ public class TestPostgreSqlConnectorTest
                     .hasPlan(output(
                             project(
                                     ImmutableMap.of(
-                                            "reverse_col_money",
-                                            expression(
+                                            "reverse_col_money", expression(
                                                     new Call(
                                                             FUNCTIONS.resolveFunction(
                                                                     "reverse",
                                                                     ImmutableList.of(new TypeSignatureProvider(VARCHAR.getTypeSignature()))),
                                                             ImmutableList.of(new Reference(VARCHAR, "col_money")))),
-                                            "reverse_col_enum",
-                                            expression(
+                                            "reverse_col_enum", expression(
                                                     new Call(
                                                             FUNCTIONS.resolveFunction(
                                                                     "reverse",

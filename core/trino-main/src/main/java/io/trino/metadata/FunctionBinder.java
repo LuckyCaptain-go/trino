@@ -167,6 +167,9 @@ class FunctionBinder
 
         StringBuilder errorMessageBuilder = new StringBuilder();
         errorMessageBuilder.append("Could not choose a best candidate operator. Explicit type casts must be added.\n");
+        errorMessageBuilder.append("Actual types: (");
+        Joiner.on(", ").appendTo(errorMessageBuilder, parameters);
+        errorMessageBuilder.append(")\n");
         errorMessageBuilder.append("Candidates are:\n");
         for (ApplicableFunction function : applicableFunctions) {
             errorMessageBuilder.append("\t * ");
@@ -233,24 +236,22 @@ class FunctionBinder
 
     private List<ApplicableFunction> selectMostSpecificFunctions(List<ApplicableFunction> candidates)
     {
+        // Provided `isMoreSpecificThan` is a partial order relation, this finds all the minimum values among candidates.
+        // TODO Warning: `isMoreSpecificThan` compares bound signature of the left with declared signature of the right (asymmetric) and it is *not* proper partial order relation.
+        //  the result depends on candidates order, and order in which `isMoreSpecificThan` is applied.
+
         List<ApplicableFunction> representatives = new ArrayList<>();
 
         for (ApplicableFunction current : candidates) {
-            boolean found = false;
-            for (int i = 0; i < representatives.size(); i++) {
-                ApplicableFunction representative = representatives.get(i);
-                if (isMoreSpecificThan(current, representative)) {
-                    representatives.set(i, current);
-                }
-                if (isMoreSpecificThan(current, representative) || isMoreSpecificThan(representative, current)) {
-                    found = true;
-                    break;
-                }
-            }
-
-            if (!found) {
+            if (representatives.removeIf(representative -> isMoreSpecificThan(current, representative))) {
                 representatives.add(current);
+                continue;
             }
+            if (representatives.stream().anyMatch(representative -> isMoreSpecificThan(representative, current))) {
+                // Current is less specific than one of the retained representatives.
+                continue;
+            }
+            representatives.add(current);
         }
 
         return representatives;
@@ -377,6 +378,9 @@ class FunctionBinder
         if (!functionMetadata.isDeterministic()) {
             newMetadata.nondeterministic();
         }
+        if (functionMetadata.isNeverFails()) {
+            newMetadata.neverFails();
+        }
         if (functionMetadata.isDeprecated()) {
             newMetadata.deprecated();
         }
@@ -420,9 +424,9 @@ class FunctionBinder
 
     /**
      * @param boundSignature Ideally this would be a real bound signature,
-     * but the resolver algorithm considers functions with illegal types (e.g., char(large_number))
-     * We could just not consider these applicable functions, but there are tests that depend on
-     * the specific error messages for these failures.
+     *         but the resolver algorithm considers functions with illegal types (e.g., char(large_number))
+     *         We could just not consider these applicable functions, but there are tests that depend on
+     *         the specific error messages for these failures.
      */
     private record ApplicableFunction(CatalogFunctionMetadata function, Signature boundSignature)
     {

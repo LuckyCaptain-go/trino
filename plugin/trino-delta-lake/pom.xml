@@ -5,7 +5,7 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>480-SNAPSHOT</version>
+        <version>482-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -85,7 +85,7 @@
         <dependency>
             <groupId>io.delta</groupId>
             <artifactId>delta-kernel-api</artifactId>
-            <version>4.0.1</version>
+            <version>4.2.0</version>
         </dependency>
 
         <dependency>
@@ -187,6 +187,12 @@
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>glue</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>commons-logging</groupId>
+                    <artifactId>commons-logging</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -228,12 +234,6 @@
         <dependency>
             <groupId>io.trino</groupId>
             <artifactId>trino-spi</artifactId>
-            <scope>provided</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.openjdk.jol</groupId>
-            <artifactId>jol-core</artifactId>
             <scope>provided</scope>
         </dependency>
 
@@ -362,6 +362,13 @@
         <dependency>
             <groupId>io.trino</groupId>
             <artifactId>trino-hdfs</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
+            <artifactId>trino-hdfs</artifactId>
+            <type>test-jar</type>
             <scope>test</scope>
         </dependency>
 
@@ -527,20 +534,6 @@
                 <groupId>org.antlr</groupId>
                 <artifactId>antlr4-maven-plugin</artifactId>
             </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-enforcer-plugin</artifactId>
-                <configuration>
-                    <rules>
-                        <bannedDependencies>
-                            <includes combine.children="append">
-                                <!-- Legacy HDFS file system uses AWS S3 SDK v1 -->
-                                <include>com.amazonaws:*:*</include>
-                            </includes>
-                        </bannedDependencies>
-                    </rules>
-                </configuration>
-            </plugin>
         </plugins>
     </build>
 
@@ -556,7 +549,7 @@
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
-                            <excludes>
+                            <excludes combine.children="append">
                                 <exclude>**/TestDeltaLakeAdlsStorage.java</exclude>
                                 <exclude>**/TestDeltaLakeAdlsConnectorSmokeTest.java</exclude>
                                 <exclude>**/TestDeltaLakeGlueMetastore.java</exclude>

@@ -176,6 +176,13 @@ For more details, see {doc}`conversion`
 - {func}`try_cast`
 - {func}`typeof`
 
+## DataSketches
+
+For more details, see {doc}`datasketches`
+
+- {func}`theta_sketch_cardinality`
+- {func}`theta_sketch_union`
+
 ## Date and time
 
 For more details, see {doc}`datetime`
@@ -481,7 +488,7 @@ For more details, see {doc}`string`
 - {func}`luhn_check`
 - {func}`normalize`
 - {func}`position`
-- {func}`randmom_string`, catalog function of the [](/connector/faker)
+- {func}`random_string`, catalog function of the [](/connector/faker)
 - {func}`replace`
 - {func}`reverse`
 - {func}`rpad`

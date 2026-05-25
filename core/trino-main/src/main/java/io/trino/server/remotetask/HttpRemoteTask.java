@@ -16,10 +16,10 @@ package io.trino.server.remotetask;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Supplier;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.SetMultimap;
-import com.google.common.net.HttpHeaders;
 import com.google.common.net.MediaType;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
@@ -67,6 +67,7 @@ import io.trino.server.TaskUpdateRequest;
 import io.trino.spi.SplitWeight;
 import io.trino.spi.TrinoException;
 import io.trino.spi.TrinoTransportException;
+import io.trino.spi.connector.ConnectorTableCredentials;
 import io.trino.sql.planner.PlanFragment;
 import io.trino.sql.planner.plan.DynamicFilterId;
 import io.trino.sql.planner.plan.PlanNode;
@@ -104,6 +105,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.util.concurrent.Futures.immediateVoidFuture;
 import static io.airlift.http.client.FullJsonResponseHandler.createFullJsonResponseHandler;
+import static io.airlift.http.client.HeaderNames.CONTENT_TYPE;
 import static io.airlift.http.client.HttpStatus.OK;
 import static io.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
 import static io.airlift.http.client.Request.Builder.prepareDelete;
@@ -144,6 +146,7 @@ public final class HttpRemoteTask
     private final String nodeId;
     private final AtomicBoolean speculative;
     private final PlanFragment planFragment;
+    private final Map<PlanNodeId, ConnectorTableCredentials> tableCredentials;
 
     private final AtomicLong nextSplitId = new AtomicLong();
 
@@ -179,7 +182,8 @@ public final class HttpRemoteTask
     @GuardedBy("this")
     private OptionalLong whenSplitQueueHasSpaceThreshold = OptionalLong.empty();
 
-    @VisibleForTesting final AtomicInteger splitBatchSize;
+    @VisibleForTesting
+    final AtomicInteger splitBatchSize;
 
     private final boolean summarizeTaskInfo;
 
@@ -217,6 +221,7 @@ public final class HttpRemoteTask
             boolean speculative,
             URI location,
             PlanFragment planFragment,
+            Map<PlanNodeId, ConnectorTableCredentials> tableCredentials,
             Multimap<PlanNodeId, Split> initialSplits,
             OutputBuffers outputBuffers,
             HttpClient httpClient,
@@ -246,6 +251,7 @@ public final class HttpRemoteTask
         requireNonNull(node, "node is null");
         requireNonNull(location, "location is null");
         requireNonNull(planFragment, "planFragment is null");
+        requireNonNull(tableCredentials, "tableCredentials is null");
         requireNonNull(outputBuffers, "outputBuffers is null");
         requireNonNull(httpClient, "httpClient is null");
         requireNonNull(executor, "executor is null");
@@ -264,6 +270,7 @@ public final class HttpRemoteTask
             this.nodeId = node.getNodeIdentifier();
             this.speculative = new AtomicBoolean(speculative);
             this.planFragment = planFragment;
+            this.tableCredentials = ImmutableMap.copyOf(tableCredentials);
             this.outputBuffers.set(outputBuffers);
             this.httpClient = httpClient;
             this.executor = executor;
@@ -295,8 +302,10 @@ public final class HttpRemoteTask
             // TODO. https://github.com/trinodb/trino/issues/15820
             this.adaptiveUpdateRequestSizeEnabled = numOfPartitionedSources == 1 && isRemoteTaskAdaptiveUpdateRequestSizeEnabled(session);
             if (numOfPartitionedSources > 1) {
-                log.debug("%s - There are more than one partitioned sources: numOfPartitionedSources=%s",
-                        taskId, planFragment.getPartitionedSources().size());
+                log.debug(
+                        "%s - There are more than one partitioned sources: numOfPartitionedSources=%s",
+                        taskId,
+                        planFragment.getPartitionedSources().size());
             }
 
             int pendingSourceSplitCount = 0;
@@ -719,8 +728,12 @@ public final class HttpRemoteTask
             }
             // abandon current request and reschedule update if size of request body exceeds requestSizeLimit and splitBatchSize is updated
             if (numSplits > newSplitBatchSize && requestSize > maxRequestSizeInBytes) {
-                log.debug("%s - current taskUpdateRequestJson exceeded limit: %d, currentSplitBatchSize: %d, newSplitBatchSize: %d",
-                        taskId, requestSize, currentSplitBatchSize, newSplitBatchSize);
+                log.debug(
+                        "%s - current taskUpdateRequestJson exceeded limit: %d, currentSplitBatchSize: %d, newSplitBatchSize: %d",
+                        taskId,
+                        requestSize,
+                        currentSplitBatchSize,
+                        newSplitBatchSize);
                 return true; // reschedule needed
             }
         }
@@ -767,6 +780,7 @@ public final class HttpRemoteTask
                 session.getIdentity().getExtraCredentials(),
                 stageSpan,
                 fragment,
+                tableCredentials,
                 splitAssignments,
                 outputBuffers.get(),
                 dynamicFilterDomains.getDynamicFilterDomains(),
@@ -790,7 +804,7 @@ public final class HttpRemoteTask
         HttpUriBuilder uriBuilder = getHttpUriBuilder(taskStatus);
         Request request = preparePost()
                 .setUri(uriBuilder.build())
-                .setHeader(HttpHeaders.CONTENT_TYPE, MediaType.JSON_UTF_8.toString())
+                .setHeader(CONTENT_TYPE, MediaType.JSON_UTF_8.toString())
                 .setBodyGenerator(createStaticBodyGenerator(taskUpdateRequestJson))
                 .setSpanBuilder(createSpanBuilder("task-update", span))
                 .build();
@@ -964,7 +978,7 @@ public final class HttpRemoteTask
         uriBuilder = uriBuilder.appendPath("fail");
         return preparePost()
                 .setUri(uriBuilder.build())
-                .setHeader(HttpHeaders.CONTENT_TYPE, MediaType.JSON_UTF_8.toString())
+                .setHeader(CONTENT_TYPE, MediaType.JSON_UTF_8.toString())
                 .setBodyGenerator(createStaticBodyGenerator(failTaskRequestCodec.toJsonBytes(failTaskRequest)))
                 .setSpanBuilder(createSpanBuilder("task-fail", span))
                 .build();

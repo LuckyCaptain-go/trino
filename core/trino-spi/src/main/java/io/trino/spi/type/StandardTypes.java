@@ -23,6 +23,7 @@ public final class StandardTypes
     public static final String BOOLEAN = BooleanType.NAME;
     public static final String DATE = DateType.NAME;
     public static final String DECIMAL = DecimalType.NAME;
+    public static final String NUMBER = NumberType.NAME;
     public static final String REAL = RealType.NAME;
     public static final String DOUBLE = DoubleType.NAME;
     public static final String HYPER_LOG_LOG = HyperLogLogType.NAME;
@@ -46,6 +47,7 @@ public final class StandardTypes
     public static final String JSON_2016 = "json2016";
     public static final String IPADDRESS = "ipaddress";
     public static final String UUID = "uuid";
+    public static final String VARIANT = "variant";
     public static final String GEOMETRY = "Geometry";
     public static final String SPHERICAL_GEOGRAPHY = "SphericalGeography"; // SphericalGeographyType.NAME
     public static final String BING_TILE = "BingTile"; // BingTileType.NAME

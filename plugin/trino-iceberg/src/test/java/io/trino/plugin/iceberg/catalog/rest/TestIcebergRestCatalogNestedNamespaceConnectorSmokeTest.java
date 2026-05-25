@@ -234,7 +234,7 @@ final class TestIcebergRestCatalogNestedNamespaceConnectorSmokeTest
         assertThatThrownBy(super::testDropTableWithMissingSnapshotFile)
                 .isInstanceOf(QueryFailedException.class)
                 .cause()
-                .hasMessageContaining("Failed to drop table")
+                .hasMessageMatching("Failed to open input stream for file: .*avro")
                 .hasNoCause();
     }
 
@@ -296,7 +296,7 @@ final class TestIcebergRestCatalogNestedNamespaceConnectorSmokeTest
     @Override
     protected boolean locationExists(String location)
     {
-        return java.nio.file.Files.exists(Path.of(location));
+        return Files.exists(Path.of(location));
     }
 
     private TableIdentifier toIdentifier(String tableName)

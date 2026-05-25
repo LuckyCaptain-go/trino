@@ -32,7 +32,10 @@ import io.trino.spi.connector.ColumnPosition;
 import io.trino.spi.connector.ConnectorCapabilities;
 import io.trino.spi.connector.ConnectorName;
 import io.trino.spi.connector.ConnectorOutputMetadata;
+import io.trino.spi.connector.ConnectorTableCredentials;
+import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
+import io.trino.spi.connector.ConnectorWritableTableHandle;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
 import io.trino.spi.connector.EntityKindAndName;
@@ -67,6 +70,7 @@ import io.trino.spi.function.FunctionId;
 import io.trino.spi.function.FunctionMetadata;
 import io.trino.spi.function.LanguageFunction;
 import io.trino.spi.function.OperatorType;
+import io.trino.spi.function.table.ConnectorTableFunctionHandle;
 import io.trino.spi.metrics.Metrics;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.FunctionAuthorization;
@@ -118,11 +122,13 @@ public interface Metadata
             String procedureName,
             Map<String, Object> executeProperties);
 
+    Set<ColumnHandle> getColumnHandlesForTableExecute(Session session, TableExecuteHandle tableExecuteHandle);
+
     Optional<TableLayout> getLayoutForTableExecute(Session session, TableExecuteHandle tableExecuteHandle);
 
     BeginTableExecuteResult<TableExecuteHandle, TableHandle> beginTableExecute(Session session, TableExecuteHandle handle, TableHandle updatedSourceTableHandle);
 
-    void finishTableExecute(Session session, TableExecuteHandle handle, Collection<Slice> fragments, List<Object> tableExecuteState);
+    Map<String, Long> finishTableExecute(Session session, TableExecuteHandle handle, Collection<Slice> fragments, List<Object> tableExecuteState);
 
     Map<String, Long> executeTableExecute(Session session, TableExecuteHandle handle);
 
@@ -437,7 +443,8 @@ public interface Metadata
             Collection<Slice> fragments,
             Collection<ComputedStatistics> computedStatistics,
             List<TableHandle> sourceTableHandles,
-            List<String> sourceTableFunctions);
+            List<String> sourceTableFunctions,
+            boolean hasNonDeterministicFunctions);
 
     /**
      * Push update into connector
@@ -493,6 +500,11 @@ public interface Metadata
      * Returns a catalog handle for the specified catalog name.
      */
     Optional<CatalogHandle> getCatalogHandle(Session session, String catalogName);
+
+    /**
+     * Returns a catalog info for the specified catalog name.
+     */
+    Optional<CatalogInfo> getCatalogInfo(Session session, String catalogName);
 
     /**
      * Gets all the catalogs
@@ -901,7 +913,7 @@ public interface Metadata
      * In the long term, this should be replaced by improvements in the cost model.
      *
      * @return true if the cumulative cost of splitting a read of the specified tableHandle into multiple reads,
-     * each of which projects a subset of the required columns, is not significantly more than the cost of reading the specified tableHandle
+     *         each of which projects a subset of the required columns, is not significantly more than the cost of reading the specified tableHandle
      */
     boolean allowSplittingReadIntoMultipleSubQueries(Session session, TableHandle tableHandle);
 
@@ -931,4 +943,22 @@ public interface Metadata
      * Returns list of functions authorization info
      */
     Set<FunctionAuthorization> getFunctionsAuthorizationInfo(Session session, QualifiedObjectPrefix prefix);
+
+    /**
+     * Returns {@link ConnectorTableCredentials} for specified {@link CatalogHandle} and {@link ConnectorTableHandle}
+     * or {@link Optional#empty} if there are no credentials.
+     */
+    Optional<ConnectorTableCredentials> getTableCredentials(Session session, CatalogHandle catalogHandle, ConnectorTableHandle tableHandle);
+
+    /**
+     * Returns {@link ConnectorTableCredentials} for specified {@link CatalogHandle} and {@link ConnectorWritableTableHandle}
+     * or {@link Optional#empty} if there are no credentials.
+     */
+    Optional<ConnectorTableCredentials> getTableCredentials(Session session, CatalogHandle catalogHandle, ConnectorWritableTableHandle writableTableHandle);
+
+    /**
+     * Returns {@link ConnectorTableCredentials} for specified {@link CatalogHandle} and {@link ConnectorTableFunctionHandle}
+     * or {@link Optional#empty} if there are no credentials.
+     */
+    Optional<ConnectorTableCredentials> getTableCredentials(Session session, CatalogHandle catalogHandle, ConnectorTableFunctionHandle tableHandle);
 }

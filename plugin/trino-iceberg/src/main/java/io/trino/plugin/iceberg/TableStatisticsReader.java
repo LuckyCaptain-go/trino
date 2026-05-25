@@ -58,6 +58,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 
@@ -120,7 +121,7 @@ public final class TableStatisticsReader
     public static TableStatistics makeTableStatistics(
             TypeManager typeManager,
             Table icebergTable,
-            Optional<Long> snapshot,
+            OptionalLong snapshot,
             TupleDomain<IcebergColumnHandle> enforcedConstraint,
             TupleDomain<IcebergColumnHandle> unenforcedConstraint,
             Set<IcebergColumnHandle> projectedColumns,
@@ -132,7 +133,7 @@ public final class TableStatisticsReader
                     .setRowCount(Estimate.of(0))
                     .build();
         }
-        long snapshotId = snapshot.get();
+        long snapshotId = snapshot.getAsLong();
 
         // Including both enforced and unenforced constraint matches how Splits will eventually be generated and allows
         // us to provide more accurate estimates. Stats will be estimated again by FilterStatsCalculator based on the
@@ -150,7 +151,7 @@ public final class TableStatisticsReader
 
         Domain partitionDomain = getPartitionDomain(effectivePredicate);
         Domain pathDomain = getPathDomain(effectivePredicate);
-        Expression filter = toIcebergExpression(effectivePredicate.filter((column, domain) -> !isMetadataColumnId(column.getId())));
+        Expression filter = toIcebergExpression(effectivePredicate.filter((column, _) -> !isMetadataColumnId(column.getId())));
 
         NonEvictableLoadingCache<Integer, ManifestEvaluator> manifestPartitionFilterEvaluators = buildNonEvictableCache(
                 CacheBuilder.newBuilder().maximumSize(1000),

@@ -104,8 +104,7 @@ public class CachingJdbcClient
             IdentityCacheMapping identityMapping,
             BaseJdbcConfig config)
     {
-        this(
-                Ticker.systemTicker(),
+        this(Ticker.systemTicker(),
                 delegate,
                 sessionPropertiesProviders,
                 identityMapping,
@@ -448,9 +447,15 @@ public class CachingJdbcClient
     }
 
     @Override
-    public void rollbackCreateTable(ConnectorSession session, JdbcOutputTableHandle handle)
+    public void rollbackDestinationTableCreation(ConnectorSession session, RemoteTableName remoteTableName)
     {
-        delegate.rollbackCreateTable(session, handle);
+        delegate.rollbackDestinationTableCreation(session, remoteTableName);
+    }
+
+    @Override
+    public void rollbackTemporaryTableCreation(ConnectorSession session, JdbcOutputTableHandle handle)
+    {
+        delegate.rollbackTemporaryTableCreation(session, handle);
     }
 
     @Override
@@ -659,9 +664,9 @@ public class CachingJdbcClient
     }
 
     /**
-     * @deprecated {@link JdbcTableHandle}  is not a good representation of the table. For example, we don't want
-     * to distinguish between "a plan table" and "table with selected columns", or "a table with a constraint" here.
-     * Use {@link #onDataChanged(SchemaTableName)}, which avoids these ambiguities.
+     * @deprecated {@link JdbcTableHandle} is not a good representation of the table. For example, we don't want
+     *         to distinguish between "a plan table" and "table with selected columns", or "a table with a constraint" here.
+     *         Use {@link #onDataChanged(SchemaTableName)}, which avoids these ambiguities.
      */
     @Deprecated
     public void onDataChanged(JdbcTableHandle handle)

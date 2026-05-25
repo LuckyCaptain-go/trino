@@ -52,12 +52,14 @@ import io.trino.operator.scalar.JoniRegexpReplaceLambdaFunction;
 import io.trino.spi.QueryId;
 import io.trino.spi.TrinoException;
 import io.trino.spi.VersionEmbedder;
+import io.trino.spi.connector.ConnectorTableCredentials;
 import io.trino.spi.predicate.Domain;
 import io.trino.spiller.LocalSpillManager;
 import io.trino.spiller.NodeSpillConfig;
 import io.trino.sql.planner.LocalExecutionPlanner;
 import io.trino.sql.planner.PlanFragment;
 import io.trino.sql.planner.plan.DynamicFilterId;
+import io.trino.sql.planner.plan.PlanNodeId;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.weakref.jmx.Flatten;
@@ -134,6 +136,7 @@ public class SqlTaskManager
 
     private final long queryMaxMemoryPerNode;
 
+    private volatile long activeTasks;
     private final CounterStat createdTasks = new CounterStat();
     private final CounterStat failedTasks = new CounterStat();
     private final Optional<StuckSplitTasksInterrupter> stuckSplitTasksInterrupter;
@@ -313,6 +316,8 @@ public class SqlTaskManager
                 }
             }, 0, intervalSeconds, SECONDS);
         });
+
+        taskManagementExecutor.scheduleWithFixedDelay(() -> activeTasks = tasks.asMap().values().stream().filter(task -> task.getTaskEndTime() == null).count(), 0, 1, SECONDS);
     }
 
     @PreDestroy
@@ -352,6 +357,12 @@ public class SqlTaskManager
     public ThreadPoolExecutorMBean getTaskNotificationExecutor()
     {
         return taskNotificationExecutorMBean;
+    }
+
+    @Managed(description = "Active tasks count")
+    public long getActiveTasksCount()
+    {
+        return activeTasks;
     }
 
     @Managed(description = "Tracked tasks count")
@@ -485,13 +496,14 @@ public class SqlTaskManager
             TaskId taskId,
             Span stageSpan,
             Optional<PlanFragment> fragment,
+            Map<PlanNodeId, ConnectorTableCredentials> tableCredentials,
             List<SplitAssignment> splitAssignments,
             OutputBuffers outputBuffers,
             Map<DynamicFilterId, Domain> dynamicFilterDomains,
             boolean speculative)
     {
         try {
-            return versionEmbedder.embedVersion(() -> doUpdateTask(session, taskId, stageSpan, fragment, splitAssignments, outputBuffers, dynamicFilterDomains, speculative)).call();
+            return versionEmbedder.embedVersion(() -> doUpdateTask(session, taskId, stageSpan, fragment, tableCredentials, splitAssignments, outputBuffers, dynamicFilterDomains, speculative)).call();
         }
         catch (Exception e) {
             throwIfUnchecked(e);
@@ -505,6 +517,7 @@ public class SqlTaskManager
             TaskId taskId,
             Span stageSpan,
             Optional<PlanFragment> fragment,
+            Map<PlanNodeId, ConnectorTableCredentials> tableCredentials,
             List<SplitAssignment> splitAssignments,
             OutputBuffers outputBuffers,
             Map<DynamicFilterId, Domain> dynamicFilterDomains,
@@ -552,7 +565,7 @@ public class SqlTaskManager
                 .ifPresent(languageFunctions -> languageFunctionProvider.registerTask(taskId, languageFunctions));
 
         sqlTask.recordHeartbeat();
-        return sqlTask.updateTask(session, stageSpan, fragment, splitAssignments, outputBuffers, dynamicFilterDomains, speculative);
+        return sqlTask.updateTask(session, stageSpan, fragment, tableCredentials, splitAssignments, outputBuffers, dynamicFilterDomains, speculative);
     }
 
     /**
@@ -730,7 +743,6 @@ public class SqlTaskManager
 
     @VisibleForTesting
     public QueryContext getQueryContext(QueryId queryId)
-
     {
         return queryContexts.getUnchecked(queryId);
     }

@@ -71,7 +71,7 @@ public class TestLakehouseConnectorTest
                 .addExtraProperty("sql.default-function-schema", "functions")
                 .addLakehouseProperty("hive.metastore.uri", hiveMinio.getHiveMetastoreEndpoint().toString())
                 .addLakehouseProperty("fs.hadoop.enabled", "true")
-                .addLakehouseProperty("fs.native-s3.enabled", "true")
+                .addLakehouseProperty("fs.s3.enabled", "true")
                 .addLakehouseProperty("s3.aws-access-key", MINIO_ROOT_USER)
                 .addLakehouseProperty("s3.aws-secret-key", MINIO_ROOT_PASSWORD)
                 .addLakehouseProperty("s3.region", MINIO_REGION)
@@ -204,7 +204,8 @@ public class TestLakehouseConnectorTest
     protected void verifySetColumnTypeFailurePermissible(Throwable e)
     {
         assertThat(e).hasMessageMatching(".*(Failed to set column type: Cannot change (column type:|type from .* to )" +
-                "|Time(stamp)? precision \\(3\\) not supported for Iceberg. Use \"time(stamp)?\\(6\\)\" instead" +
+                "|Time precision \\(3\\) not supported for Iceberg. Use \"time\\(6\\)\" instead" +
+                "|Timestamp precision \\(3\\) not supported for Iceberg. Use \"timestamp\\(6\\)\" or \"timestamp\\(9\\)\" instead" +
                 "|Type not supported for Iceberg: (tinyint|smallint|char\\(20\\))" +
                 "|Cannot update map keys).*");
     }
@@ -213,7 +214,8 @@ public class TestLakehouseConnectorTest
     protected void verifySetFieldTypeFailurePermissible(Throwable e)
     {
         assertThat(e).hasMessageMatching(".*(Failed to set field type: Cannot change (column type:|type from .* to )" +
-                "|Time(stamp)? precision \\(3\\) not supported for Iceberg. Use \"time(stamp)?\\(6\\)\" instead" +
+                "|Time precision \\(3\\) not supported for Iceberg. Use \"time\\(6\\)\" instead" +
+                "|Timestamp precision \\(3\\) not supported for Iceberg. Use \"timestamp\\(6\\)\" or \"timestamp\\(9\\)\" instead" +
                 "|Type not supported for Iceberg: (tinyint|smallint|char\\(20\\))" +
                 "|Cannot update map keys).*");
     }
@@ -245,25 +247,22 @@ public class TestLakehouseConnectorTest
         if (setup.sourceColumnType().equals("timestamp(3) with time zone")) {
             return Optional.of(setup.withNewValueLiteral("TIMESTAMP '2020-02-12 14:03:00.123000 +00:00'"));
         }
-        switch ("%s -> %s".formatted(setup.sourceColumnType(), setup.newColumnType())) {
-            case "row(x integer) -> row(\"y\" integer)":
-                return Optional.of(setup.withNewValueLiteral("NULL"));
-            case "tinyint -> smallint":
-            case "bigint -> integer":
-            case "bigint -> smallint":
-            case "bigint -> tinyint":
-            case "decimal(5,3) -> decimal(5,2)":
-            case "char(25) -> char(20)":
-            case "varchar -> char(20)":
-            case "time(6) -> time(3)":
-            case "timestamp(6) -> timestamp(3)":
-            // Iceberg cannot update map keys
-            case "map(integer, varchar) -> map(bigint, varchar)":
-                return Optional.of(setup.asUnsupported());
-            case "varchar(100) -> varchar(50)":
-                return Optional.empty();
-        }
-        return Optional.of(setup);
+        return switch ("%s -> %s".formatted(setup.sourceColumnType(), setup.newColumnType())) {
+            case "row(x integer) -> row(\"y\" integer)" -> Optional.of(setup.withNewValueLiteral("NULL"));
+            case "tinyint -> smallint",
+                 "bigint -> integer",
+                 "bigint -> smallint",
+                 "bigint -> tinyint",
+                 "decimal(5,3) -> decimal(5,2)",
+                 "char(25) -> char(20)",
+                 "varchar -> char(20)",
+                 "time(6) -> time(3)",
+                 "timestamp(6) -> timestamp(3)",
+                 // Iceberg cannot update map keys
+                 "map(integer, varchar) -> map(bigint, varchar)" -> Optional.of(setup.asUnsupported());
+            case "varchar(100) -> varchar(50)" -> Optional.empty();
+            default -> Optional.of(setup);
+        };
     }
 
     @Override
@@ -273,23 +272,21 @@ public class TestLakehouseConnectorTest
             // The connector returns UTC instead of the given time zone
             return Optional.of(setup.withNewValueLiteral("TIMESTAMP '2020-02-12 14:03:00.123000 +00:00'"));
         }
-        switch ("%s -> %s".formatted(setup.sourceColumnType(), setup.newColumnType())) {
-            case "tinyint -> smallint":
-            case "bigint -> integer":
-            case "bigint -> smallint":
-            case "bigint -> tinyint":
-            case "decimal(5,3) -> decimal(5,2)":
-            case "char(25) -> char(20)":
-            case "varchar -> char(20)":
-            case "time(6) -> time(3)":
-            case "timestamp(6) -> timestamp(3)":
-            case "map(integer, varchar) -> map(bigint, varchar)":
-                return Optional.of(setup.asUnsupported());
-            case "varchar(100) -> varchar(50)":
-            case "row(x integer) -> row(\"y\" integer)":
-                return Optional.empty();
-        }
-        return Optional.of(setup);
+        return switch ("%s -> %s".formatted(setup.sourceColumnType(), setup.newColumnType())) {
+            case "tinyint -> smallint",
+                 "bigint -> integer",
+                 "bigint -> smallint",
+                 "bigint -> tinyint",
+                 "decimal(5,3) -> decimal(5,2)",
+                 "char(25) -> char(20)",
+                 "varchar -> char(20)",
+                 "time(6) -> time(3)",
+                 "timestamp(6) -> timestamp(3)",
+                 "map(integer, varchar) -> map(bigint, varchar)" -> Optional.of(setup.asUnsupported());
+            case "varchar(100) -> varchar(50)",
+                 "row(x integer) -> row(\"y\" integer)" -> Optional.empty();
+            default -> Optional.of(setup);
+        };
     }
 
     @Disabled("Long names cause metastore timeouts")

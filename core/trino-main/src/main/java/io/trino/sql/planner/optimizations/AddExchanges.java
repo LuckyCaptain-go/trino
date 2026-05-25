@@ -98,6 +98,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Set;
@@ -670,7 +671,8 @@ public class AddExchanges
                         true,
                         session,
                         plannerContext,
-                        statsProvider);
+                        statsProvider,
+                        symbolAllocator);
                 if (plan.isPresent()) {
                     return new PlanWithProperties(plan.get(), derivePropertiesRecursively(plan.get()));
                 }
@@ -819,8 +821,7 @@ public class AddExchanges
                 else {
                     PartitioningHandle partitioningHandle = partitioningScheme.get().getPartitioning().getHandle();
                     verify(!(partitioningHandle.getConnectorHandle() instanceof SystemPartitioningHandle));
-                    verify(
-                            partitioningScheme.get().getPartitioning().getArguments().stream().noneMatch(Partitioning.ArgumentBinding::isConstant),
+                    verify(partitioningScheme.get().getPartitioning().getArguments().stream().noneMatch(Partitioning.ArgumentBinding::isConstant),
                             "Table writer partitioning has constant arguments");
                     partitioningScheme = Optional.of(partitioningScheme.get().withPartitioningHandle(
                             new PartitioningHandle(
@@ -1535,7 +1536,7 @@ public class AddExchanges
     private static Map<Symbol, Symbol> computeIdentityTranslations(Assignments assignments)
     {
         Map<Symbol, Symbol> outputToInput = new HashMap<>();
-        for (Map.Entry<Symbol, Expression> assignment : assignments.assignments().entrySet()) {
+        for (Entry<Symbol, Expression> assignment : assignments.assignments().entrySet()) {
             if (assignment.getValue() instanceof Reference) {
                 outputToInput.put(assignment.getKey(), Symbol.from(assignment.getValue()));
             }

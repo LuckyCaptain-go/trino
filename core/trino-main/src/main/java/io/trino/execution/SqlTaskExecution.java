@@ -49,6 +49,7 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Queue;
@@ -160,7 +161,7 @@ public class SqlTaskExecution
                     .build();
 
             this.pendingSplitsByPlanNode = this.driverRunnerFactoriesWithSplitLifeCycle.keySet().stream()
-                    .collect(toImmutableMap(identity(), ignore -> new PendingSplitsForPlanNode()));
+                    .collect(toImmutableMap(identity(), _ -> new PendingSplitsForPlanNode()));
             sourceStartOrder = localExecutionPlan.getPartitionedSourceOrder();
 
             checkArgument(this.driverRunnerFactoriesWithSplitLifeCycle.keySet().equals(partitionedSources),
@@ -432,12 +433,12 @@ public class SqlTaskExecution
     public synchronized Set<PlanNodeId> getNoMoreSplits()
     {
         ImmutableSet.Builder<PlanNodeId> noMoreSplits = ImmutableSet.builder();
-        for (Map.Entry<PlanNodeId, DriverSplitRunnerFactory> entry : driverRunnerFactoriesWithSplitLifeCycle.entrySet()) {
+        for (Entry<PlanNodeId, DriverSplitRunnerFactory> entry : driverRunnerFactoriesWithSplitLifeCycle.entrySet()) {
             if (entry.getValue().isNoMoreDriverRunner()) {
                 noMoreSplits.add(entry.getKey());
             }
         }
-        for (Map.Entry<PlanNodeId, DriverSplitRunnerFactory> entry : driverRunnerFactoriesWithRemoteSource.entrySet()) {
+        for (Entry<PlanNodeId, DriverSplitRunnerFactory> entry : driverRunnerFactoriesWithRemoteSource.entrySet()) {
             if (entry.getValue().isNoMoreSplits()) {
                 noMoreSplits.add(entry.getKey());
             }

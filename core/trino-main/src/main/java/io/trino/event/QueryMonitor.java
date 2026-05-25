@@ -90,6 +90,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -184,7 +185,7 @@ public class QueryMonitor
     public void queryImmediateFailureEvent(BasicQueryInfo queryInfo, ExecutionFailureInfo failure)
     {
         BasicQueryStats queryStats = queryInfo.getQueryStats();
-        eventListenerManager.queryCompleted(requiresAnonymizedPlan -> new QueryCompletedEvent(
+        eventListenerManager.queryCompleted(_ -> new QueryCompletedEvent(
                 new QueryMetadata(
                         queryInfo.getQueryId().toString(),
                         queryInfo.getSession().getTransactionId().map(TransactionId::toString),
@@ -458,7 +459,7 @@ public class QueryMonitor
         ImmutableList.Builder<QueryInputMetadata> inputs = ImmutableList.builderWithExpectedSize(queryInfo.getInputs().size());
         for (Input input : queryInfo.getInputs()) {
             // Note: input table can be mapped to multiple operators
-            Collection<OperatorStats> inputTableOperatorStats = planNodeStats.get(new FragmentNode(input.getFragmentId(), input.getPlanNodeId()));
+            Collection<OperatorStats> inputTableOperatorStats = planNodeStats.get(new FragmentNode(input.fragmentId(), input.planNodeId()));
 
             OptionalLong physicalInputBytes = OptionalLong.empty();
             OptionalLong physicalInputPositions = OptionalLong.empty();
@@ -476,15 +477,15 @@ public class QueryMonitor
                     .reduce(Metrics.EMPTY, Metrics::mergeWith);
 
             inputs.add(new QueryInputMetadata(
-                    input.getConnectorName(),
-                    input.getCatalogName(),
-                    input.getCatalogVersion(),
-                    input.getSchema(),
-                    input.getTable(),
-                    input.getColumns().stream()
-                            .map(column -> new QueryInputMetadata.Column(column.getName(), column.getType()))
+                    input.connectorName(),
+                    input.catalogName(),
+                    input.catalogVersion(),
+                    input.schema(),
+                    input.table(),
+                    input.columns().stream()
+                            .map(column -> new QueryInputMetadata.Column(column.name(), column.type()))
                             .collect(toImmutableList()),
-                    input.getConnectorInfo(),
+                    input.connectorInfo(),
                     connectorMetrics,
                     physicalInputBytes,
                     physicalInputPositions));
@@ -501,8 +502,8 @@ public class QueryMonitor
             Optional<List<OutputColumnMetadata>> outputColumnsMetadata = queryInfo.getOutput().get().getColumns()
                     .map(columns -> columns.stream()
                             .map(column -> new OutputColumnMetadata(
-                                    column.getColumn().getName(),
-                                    column.getColumn().getType(),
+                                    column.getColumn().name(),
+                                    column.getColumn().type(),
                                     column.getSourceColumns().stream()
                                             .map(Analysis.SourceColumn::getColumnDetail)
                                             .collect(toImmutableSet())))
@@ -537,8 +538,21 @@ public class QueryMonitor
             return;
         }
 
+        List<OperatorStats> operatorSummaries = stageInfo.stageStats().getOperatorSummaries();
+        Map<PlanNodeId, Metrics> splitSourceMetrics = stageInfo.stageStats().getSplitSourceMetrics();
+        ImmutableList.Builder<OperatorStats> operatorStats = ImmutableList.builderWithExpectedSize(operatorSummaries.size());
+        for (OperatorStats stats : operatorSummaries) {
+            if (stats.getSourceId().isPresent()) {
+                Metrics metrics = splitSourceMetrics.get(stats.getSourceId().get());
+                if (metrics != null && metrics != Metrics.EMPTY) {
+                    stats = stats.withConnectorSplitSourceMetrics(metrics);
+                }
+            }
+            operatorStats.add(stats);
+        }
+
         // Note: a plan node may be mapped to multiple operators
-        Map<PlanNodeId, Collection<OperatorStats>> allOperatorStats = Multimaps.index(stageInfo.stageStats().getOperatorSummaries(), OperatorStats::getPlanNodeId).asMap();
+        Map<PlanNodeId, Collection<OperatorStats>> allOperatorStats = Multimaps.index(operatorStats.build(), OperatorStats::getPlanNodeId).asMap();
 
         // Sometimes a plan node is merged with other nodes into a single operator, and in that case,
         // use the stats of the nearest parent node with stats.
@@ -594,8 +608,8 @@ public class QueryMonitor
     {
         Map<String, String> mergedProperties = new LinkedHashMap<>(session.getSystemProperties());
 
-        for (Map.Entry<String, Map<String, String>> catalogEntry : session.getCatalogProperties().entrySet()) {
-            for (Map.Entry<String, String> entry : catalogEntry.getValue().entrySet()) {
+        for (Entry<String, Map<String, String>> catalogEntry : session.getCatalogProperties().entrySet()) {
+            for (Entry<String, String> entry : catalogEntry.getValue().entrySet()) {
                 mergedProperties.put(catalogEntry.getKey() + "." + entry.getKey(), entry.getValue());
             }
         }
@@ -770,20 +784,20 @@ public class QueryMonitor
     {
         return stageInfo.stageStats().getOutputBufferUtilization()
                 .map(utilization -> new StageOutputBufferUtilization(
-                            stageInfo.stageId().id(),
-                            stageInfo.tasks().size(),
-                            // scale ratio to percentages
-                            utilization.p01() * 100,
-                            utilization.p05() * 100,
-                            utilization.p10() * 100,
-                            utilization.p25() * 100,
-                            utilization.p50() * 100,
-                            utilization.p75() * 100,
-                            utilization.p90() * 100,
-                            utilization.p95() * 100,
-                            utilization.p99() * 100,
-                            utilization.min() * 100,
-                            utilization.max() * 100,
+                        stageInfo.stageId().id(),
+                        stageInfo.tasks().size(),
+                        // scale ratio to percentages
+                        utilization.p01() * 100,
+                        utilization.p05() * 100,
+                        utilization.p10() * 100,
+                        utilization.p25() * 100,
+                        utilization.p50() * 100,
+                        utilization.p75() * 100,
+                        utilization.p90() * 100,
+                        utilization.p95() * 100,
+                        utilization.p99() * 100,
+                        utilization.min() * 100,
+                        utilization.max() * 100,
                         Duration.ofNanos(utilization.total())));
     }
 

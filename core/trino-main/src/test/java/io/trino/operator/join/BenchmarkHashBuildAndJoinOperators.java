@@ -27,7 +27,8 @@ import io.trino.operator.PagesIndex;
 import io.trino.operator.PartitionFunction;
 import io.trino.operator.TaskContext;
 import io.trino.operator.exchange.LocalPartitionGenerator;
-import io.trino.operator.join.HashBuilderOperator.HashBuilderOperatorFactory;
+import io.trino.operator.join.spilling.HashBuilderOperator.HashBuilderOperatorFactory;
+import io.trino.operator.join.spilling.PartitionedLookupSourceFactory;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.block.Block;
@@ -122,17 +123,10 @@ public class BenchmarkHashBuildAndJoinOperators
         public void setup()
         {
             switch (hashColumns) {
-                case "varchar":
-                    hashChannels = Ints.asList(0);
-                    break;
-                case "bigint":
-                    hashChannels = Ints.asList(1);
-                    break;
-                case "all":
-                    hashChannels = Ints.asList(0, 1, 2);
-                    break;
-                default:
-                    throw new UnsupportedOperationException(format("Unknown hashColumns value [%s]", hashColumns));
+                case "varchar" -> hashChannels = Ints.asList(0);
+                case "bigint" -> hashChannels = Ints.asList(1);
+                case "all" -> hashChannels = Ints.asList(0, 1, 2);
+                default -> throw new UnsupportedOperationException(format("Unknown hashColumns value [%s]", hashColumns));
             }
             executor = newCachedThreadPool(daemonThreadsNamed(getClass().getSimpleName() + "-%s"));
             scheduledExecutor = newScheduledThreadPool(2, daemonThreadsNamed(getClass().getSimpleName() + "-scheduledExecutor-%s"));
@@ -210,17 +204,10 @@ public class BenchmarkHashBuildAndJoinOperators
             super.setup();
 
             switch (outputColumns) {
-                case "varchar":
-                    outputChannels = Ints.asList(0);
-                    break;
-                case "bigint":
-                    outputChannels = Ints.asList(1);
-                    break;
-                case "all":
-                    outputChannels = Ints.asList(0, 1, 2);
-                    break;
-                default:
-                    throw new UnsupportedOperationException(format("Unknown outputColumns value [%s]", hashColumns));
+                case "varchar" -> outputChannels = Ints.asList(0);
+                case "bigint" -> outputChannels = Ints.asList(1);
+                case "all" -> outputChannels = Ints.asList(0, 1, 2);
+                default -> throw new UnsupportedOperationException(format("Unknown outputColumns value [%s]", hashColumns));
             }
 
             JoinBridgeManager<PartitionedLookupSourceFactory> lookupSourceFactory = getLookupSourceFactoryManager(this, outputChannels, partitionCount);
@@ -330,7 +317,7 @@ public class BenchmarkHashBuildAndJoinOperators
                 outputChannels,
                 buildContext.getHashChannels(),
                 Optional.empty(),
-                Optional.empty(),
+                OptionalInt.empty(),
                 ImmutableList.of(),
                 10_000,
                 new PagesIndex.TestingFactory(false),

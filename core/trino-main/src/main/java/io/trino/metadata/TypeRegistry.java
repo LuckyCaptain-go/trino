@@ -73,6 +73,7 @@ import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.HyperLogLogType.HYPER_LOG_LOG;
 import static io.trino.spi.type.IntegerType.INTEGER;
+import static io.trino.spi.type.NumberType.NUMBER;
 import static io.trino.spi.type.P4HyperLogLogType.P4_HYPER_LOG_LOG;
 import static io.trino.spi.type.QuantileDigestParametricType.QDIGEST;
 import static io.trino.spi.type.RealType.REAL;
@@ -84,6 +85,7 @@ import static io.trino.spi.type.TimestampWithTimeZoneParametricType.TIMESTAMP_WI
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.UuidType.UUID;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
+import static io.trino.spi.type.VariantType.VARIANT;
 import static io.trino.sql.analyzer.TypeSignatureTranslator.toTypeSignature;
 import static io.trino.type.ArrayParametricType.ARRAY;
 import static io.trino.type.CodePointsType.CODE_POINTS;
@@ -136,6 +138,7 @@ public final class TypeRegistry
         addType(TINYINT);
         addType(DOUBLE);
         addType(REAL);
+        addType(NUMBER);
         addType(VARBINARY);
         addType(DATE);
         addType(INTERVAL_YEAR_MONTH);
@@ -150,6 +153,7 @@ public final class TypeRegistry
         addType(JSON_2016);
         addType(COLOR);
         addType(JSON);
+        addType(VARIANT);
         addType(CODE_POINTS);
         addType(IPADDRESS);
         addType(UUID);
@@ -228,8 +232,14 @@ public final class TypeRegistry
         }
 
         // TODO: reimplement this check? Currently "varchar(Integer.MAX_VALUE)" fails with "varchar"
-        //checkState(instantiatedType.equalsSignature(signature), "Instantiated parametric type name (%s) does not match expected name (%s)", instantiatedType, signature);
+        // checkState(instantiatedType.equalsSignature(signature), "Instantiated parametric type name (%s) does not match expected name (%s)", instantiatedType, signature);
         return instantiatedType;
+    }
+
+    public boolean isTypeRegistered(String name)
+    {
+        String key = name.toLowerCase(Locale.ENGLISH);
+        return types.containsKey(new TypeSignature(key)) || parametricTypes.containsKey(key);
     }
 
     public Collection<Type> getTypes()
@@ -452,6 +462,12 @@ public final class TypeRegistry
         public Type getType(TypeId id)
         {
             return typeRegistry.getType(id);
+        }
+
+        @Override
+        public boolean isTypeRegistered(String name)
+        {
+            return typeRegistry.isTypeRegistered(name);
         }
 
         @Override

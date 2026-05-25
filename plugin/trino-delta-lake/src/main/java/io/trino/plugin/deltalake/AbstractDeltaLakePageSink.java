@@ -108,6 +108,7 @@ public abstract class AbstractDeltaLakePageSink
     private final List<Boolean> activeWriters = new ArrayList<>();
     protected final ImmutableList.Builder<DataFileInfo> dataFileInfos = ImmutableList.builder();
     private final DeltaLakeParquetSchemaMapping parquetSchemaMapping;
+    private final boolean useDeltaLengthByteArrayEncoding;
     private long currentOpenWriters;
 
     public AbstractDeltaLakePageSink(
@@ -124,7 +125,8 @@ public abstract class AbstractDeltaLakePageSink
             ConnectorSession session,
             DeltaLakeWriterStats stats,
             String trinoVersion,
-            DeltaLakeParquetSchemaMapping parquetSchemaMapping)
+            DeltaLakeParquetSchemaMapping parquetSchemaMapping,
+            boolean useDeltaLengthByteArrayEncoding)
     {
         this.typeOperators = requireNonNull(typeOperators, "typeOperators is null");
         requireNonNull(inputColumns, "inputColumns is null");
@@ -155,24 +157,21 @@ public abstract class AbstractDeltaLakePageSink
         for (int inputIndex = 0; inputIndex < inputColumns.size(); inputIndex++) {
             DeltaLakeColumnHandle column = inputColumns.get(inputIndex);
             switch (column.columnType()) {
-                case PARTITION_KEY:
+                case PARTITION_KEY -> {
                     int partitionPosition = toOriginalPartitionPositions.get(column.columnName());
                     partitionColumnInputIndex[partitionPosition] = inputIndex;
                     originalPartitionColumnNames[partitionPosition] = column.columnName();
                     partitionColumnTypes[partitionPosition] = column.baseType();
-                    break;
-                case REGULAR:
+                }
+                case REGULAR -> {
                     verify(column.isBaseColumn(), "Unexpected dereference: %s", column);
                     dataColumnHandles.add(column);
                     dataColumnsInputIndex.add(inputIndex);
                     dataColumnNames.add(column.basePhysicalColumnName());
                     dataColumnTypes.add(column.basePhysicalType());
-                    break;
-                case SYNTHESIZED:
-                    processSynthesizedColumn(column);
-                    break;
-                default:
-                    throw new IllegalStateException("Unexpected column type: " + column.columnType());
+                }
+                case SYNTHESIZED -> processSynthesizedColumn(column);
+                default -> throw new IllegalStateException("Unexpected column type: " + column.columnType());
             }
         }
 
@@ -194,6 +193,7 @@ public abstract class AbstractDeltaLakePageSink
         this.trinoVersion = requireNonNull(trinoVersion, "trinoVersion is null");
         this.targetMaxFileSize = DeltaLakeSessionProperties.getTargetMaxFileSize(session);
         this.idleWriterMinFileSize = DeltaLakeSessionProperties.getIdleWriterMinFileSize(session);
+        this.useDeltaLengthByteArrayEncoding = useDeltaLengthByteArrayEncoding;
     }
 
     protected abstract void processSynthesizedColumn(DeltaLakeColumnHandle column);
@@ -469,6 +469,7 @@ public abstract class AbstractDeltaLakePageSink
                 .setMaxBlockSize(getParquetWriterBlockSize(session))
                 .setMaxPageSize(getParquetWriterPageSize(session))
                 .setMaxPageValueCount(getParquetWriterPageValueCount(session))
+                .setUseDeltaLengthByteArrayEncoding(useDeltaLengthByteArrayEncoding)
                 .build();
         CompressionCodec compressionCodec = toCompressionCodec(getCompressionCodec(session)).getParquetCompressionCodec()
                 .orElseThrow(); // validated on the session property level

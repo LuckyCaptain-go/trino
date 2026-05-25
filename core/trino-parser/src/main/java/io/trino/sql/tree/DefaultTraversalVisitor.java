@@ -118,6 +118,11 @@ public abstract class DefaultTraversalVisitor<C>
     @Override
     protected Void visitQuery(Query node, C context)
     {
+        if (!node.getSessionProperties().isEmpty()) {
+            for (SessionProperty sessionProperty : node.getSessionProperties()) {
+                process(sessionProperty.getValue(), context);
+            }
+        }
         if (node.getWith().isPresent()) {
             process(node.getWith().get(), context);
         }
@@ -215,6 +220,25 @@ public abstract class DefaultTraversalVisitor<C>
             process(node.getFilter().get(), context);
         }
 
+        return null;
+    }
+
+    @Override
+    protected Void visitStaticMethodCall(StaticMethodCall node, C context)
+    {
+        for (Expression argument : node.getArguments()) {
+            process(argument, context);
+        }
+        return null;
+    }
+
+    @Override
+    protected Void visitMethodCall(MethodCall node, C context)
+    {
+        process(node.getReceiver(), context);
+        for (Expression argument : node.getArguments()) {
+            process(argument, context);
+        }
         return null;
     }
 
@@ -357,6 +381,23 @@ public abstract class DefaultTraversalVisitor<C>
 
         node.getDefaultValue()
                 .ifPresent(value -> process(value, context));
+
+        return null;
+    }
+
+    @Override
+    protected Void visitTable(Table node, C context)
+    {
+        node.getQueryPeriod().ifPresent(period -> process(period, context));
+
+        return null;
+    }
+
+    @Override
+    protected Void visitQueryPeriod(QueryPeriod node, C context)
+    {
+        node.getStart().ifPresent(start -> process(start, context));
+        node.getEnd().ifPresent(end -> process(end, context));
 
         return null;
     }
@@ -594,6 +635,15 @@ public abstract class DefaultTraversalVisitor<C>
     }
 
     @Override
+    protected Void visitNearest(Nearest node, C context)
+    {
+        process(node.getRelation(), context);
+        node.getWhere().ifPresent(expression -> process(expression, context));
+        process(node.getMatch(), context);
+        return null;
+    }
+
+    @Override
     protected Void visitGroupBy(GroupBy node, C context)
     {
         for (GroupingElement groupingElement : node.getGroupingElements()) {
@@ -806,6 +856,15 @@ public abstract class DefaultTraversalVisitor<C>
     protected Void visitExplainAnalyze(ExplainAnalyze node, C context)
     {
         process(node.getStatement(), context);
+        return null;
+    }
+
+    @Override
+    protected Void visitCall(Call node, C context)
+    {
+        for (CallArgument argument : node.getArguments()) {
+            process(argument.getValue(), context);
+        }
         return null;
     }
 

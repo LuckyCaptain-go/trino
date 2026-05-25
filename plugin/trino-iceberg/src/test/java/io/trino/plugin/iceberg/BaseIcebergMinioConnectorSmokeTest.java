@@ -15,7 +15,7 @@ package io.trino.plugin.iceberg;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.minio.messages.Event;
+import io.minio.messages.NotificationRecords.Event;
 import io.trino.Session;
 import io.trino.metastore.Column;
 import io.trino.metastore.HiveMetastore;
@@ -85,7 +85,7 @@ public abstract class BaseIcebergMinioConnectorSmokeTest
                                 .put("iceberg.catalog.type", "HIVE_METASTORE")
                                 .put("hive.metastore.uri", hiveMinioDataLake.getHiveMetastoreEndpoint().toString())
                                 .put("hive.metastore.thrift.client.read-timeout", "1m") // read timed out sometimes happens with the default timeout
-                                .put("fs.native-s3.enabled", "true")
+                                .put("fs.s3.enabled", "true")
                                 .put("s3.aws-access-key", MINIO_ROOT_USER)
                                 .put("s3.aws-secret-key", MINIO_ROOT_PASSWORD)
                                 .put("s3.region", MINIO_REGION)
@@ -224,7 +224,7 @@ public abstract class BaseIcebergMinioConnectorSmokeTest
         String location = "s3://%s/%s/%s/".formatted(bucketName, schemaName, tableName);
         Queue<Event> events = new ConcurrentLinkedQueue<>();
         hiveMinioDataLake.getMinioClient().captureBucketNotifications(bucketName, event -> {
-            if (event.eventType().toString().toLowerCase(ENGLISH).contains("remove")) {
+            if (event.eventName().contains("ObjectRemoved")) {
                 events.add(event);
             }
         });
@@ -293,7 +293,7 @@ public abstract class BaseIcebergMinioConnectorSmokeTest
     {
         HiveMetastore metastore = getHiveMetastore(getQueryRunner());
         // simulate iceberg table created by spark with lowercase table type
-        Table lowerCaseTableType = io.trino.metastore.Table.builder()
+        Table lowerCaseTableType = Table.builder()
                 .setDatabaseName(schema)
                 .setTableName("lowercase_type_" + randomNameSuffix())
                 .setOwner(Optional.empty())

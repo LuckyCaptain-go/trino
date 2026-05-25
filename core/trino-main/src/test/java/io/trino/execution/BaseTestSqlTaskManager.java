@@ -78,6 +78,7 @@ import static io.trino.execution.TaskTestUtils.TABLE_SCAN_NODE_ID;
 import static io.trino.execution.TaskTestUtils.createTestingPlanner;
 import static io.trino.execution.buffer.PagesSerdeUtil.getSerializedPagePositionCount;
 import static io.trino.execution.buffer.PipelinedOutputBuffers.BufferType.PARTITIONED;
+import static io.trino.sql.planner.TestingPlannerContext.PLANNER_CONTEXT;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -290,6 +291,7 @@ public abstract class BaseTestSqlTaskManager
                     reduceLimitsId,
                     Span.getInvalid(),
                     Optional.of(PLAN_FRAGMENT),
+                    ImmutableMap.of(),
                     ImmutableList.of(new SplitAssignment(TABLE_SCAN_NODE_ID, ImmutableSet.of(SPLIT), true)),
                     PipelinedOutputBuffers.createInitial(PARTITIONED).withBuffer(OUT, 0).withNoMoreBufferIds(),
                     ImmutableMap.of(),
@@ -305,6 +307,7 @@ public abstract class BaseTestSqlTaskManager
                     increaseLimitsId,
                     Span.getInvalid(),
                     Optional.of(PLAN_FRAGMENT),
+                    ImmutableMap.of(),
                     ImmutableList.of(new SplitAssignment(TABLE_SCAN_NODE_ID, ImmutableSet.of(SPLIT), true)),
                     PipelinedOutputBuffers.createInitial(PARTITIONED).withBuffer(OUT, 0).withNoMoreBufferIds(),
                     ImmutableMap.of(),
@@ -325,7 +328,7 @@ public abstract class BaseTestSqlTaskManager
                 new EmbedVersion("testversion"),
                 new NoConnectorServicesProvider(),
                 createTestingPlanner(),
-                new WorkerLanguageFunctionProvider(new LanguageFunctionEngineManager()),
+                new WorkerLanguageFunctionProvider(new LanguageFunctionEngineManager(), PLANNER_CONTEXT.getMetadata(), PLANNER_CONTEXT.getTypeManager()),
                 new MockLocationFactory(),
                 taskExecutor,
                 new NodeInfo("test"),
@@ -342,10 +345,12 @@ public abstract class BaseTestSqlTaskManager
 
     private TaskInfo createTask(SqlTaskManager sqlTaskManager, TaskId taskId, Set<ScheduledSplit> splits, OutputBuffers outputBuffers)
     {
-        return sqlTaskManager.updateTask(TEST_SESSION,
+        return sqlTaskManager.updateTask(
+                TEST_SESSION,
                 taskId,
                 Span.getInvalid(),
                 Optional.of(PLAN_FRAGMENT),
+                ImmutableMap.of(),
                 ImmutableList.of(new SplitAssignment(TABLE_SCAN_NODE_ID, splits, true)),
                 outputBuffers,
                 ImmutableMap.of(),
@@ -355,11 +360,13 @@ public abstract class BaseTestSqlTaskManager
     private TaskInfo createTask(SqlTaskManager sqlTaskManager, TaskId taskId, OutputBuffers outputBuffers)
     {
         sqlTaskManager.getQueryContext(taskId.queryId())
-                .addTaskContext(new TaskStateMachine(taskId, directExecutor()), testSessionBuilder().build(), () -> {}, false, false);
-        return sqlTaskManager.updateTask(TEST_SESSION,
+                .addTaskContext(new TaskStateMachine(taskId, directExecutor()), ImmutableMap.of(), testSessionBuilder().build(), () -> {}, false, false);
+        return sqlTaskManager.updateTask(
+                TEST_SESSION,
                 taskId,
                 Span.getInvalid(),
                 Optional.of(PLAN_FRAGMENT),
+                ImmutableMap.of(),
                 ImmutableList.of(),
                 outputBuffers,
                 ImmutableMap.of(),

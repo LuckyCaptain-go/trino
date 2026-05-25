@@ -134,6 +134,7 @@ public class DeltaLakeMergeSink
     private final Map<String, DeletionVectorEntry> deletionVectors;
     private final int randomPrefixLength;
     private final Optional<String> shallowCloneSourceTableLocation;
+    private final boolean useDeltaLengthByteArrayEncoding;
     private long writtenBytes;
 
     @Nullable
@@ -161,7 +162,8 @@ public class DeltaLakeMergeSink
             boolean deletionVectorEnabled,
             Map<String, DeletionVectorEntry> deletionVectors,
             int randomPrefixLength,
-            Optional<String> shallowCloneSourceTableLocation)
+            Optional<String> shallowCloneSourceTableLocation,
+            boolean useDeltaLengthByteArrayEncoding)
     {
         this.typeOperators = requireNonNull(typeOperators, "typeOperators is null");
         this.session = requireNonNull(session, "session is null");
@@ -191,6 +193,7 @@ public class DeltaLakeMergeSink
         this.deletionVectors = ImmutableMap.copyOf(requireNonNull(deletionVectors, "deletionVectors is null"));
         this.randomPrefixLength = randomPrefixLength;
         this.shallowCloneSourceTableLocation = requireNonNull(shallowCloneSourceTableLocation, "shallowCloneSourceTableLocation is null");
+        this.useDeltaLengthByteArrayEncoding = useDeltaLengthByteArrayEncoding;
 
         dataColumnsIndices = new int[tableColumnCount];
         dataAndRowIdColumnsIndices = new int[tableColumnCount + 1];
@@ -284,24 +287,23 @@ public class DeltaLakeMergeSink
         for (int position = 0; position < positionCount; position++) {
             byte operation = TINYINT.getByte(operationBlock, position);
             switch (operation) {
-                case DELETE_OPERATION_NUMBER:
+                case DELETE_OPERATION_NUMBER -> {
                     deletePositions[deletePositionCount] = position;
                     deletePositionCount++;
-                    break;
-                case INSERT_OPERATION_NUMBER:
+                }
+                case INSERT_OPERATION_NUMBER -> {
                     insertPositions[insertPositionCount] = position;
                     insertPositionCount++;
-                    break;
-                case UPDATE_INSERT_OPERATION_NUMBER:
+                }
+                case UPDATE_INSERT_OPERATION_NUMBER -> {
                     updateInsertPositions[updateInsertPositionCount] = position;
                     updateInsertPositionCount++;
-                    break;
-                case UPDATE_DELETE_OPERATION_NUMBER:
+                }
+                case UPDATE_DELETE_OPERATION_NUMBER -> {
                     updateDeletePositions[updateDeletePositionCount] = position;
                     updateDeletePositionCount++;
-                    break;
-                default:
-                    throw new IllegalArgumentException("Invalid merge operation: " + operation);
+                }
+                default -> throw new IllegalArgumentException("Invalid merge operation: " + operation);
             }
         }
         Optional<Page> deletePage = Optional.empty();
@@ -400,7 +402,7 @@ public class DeltaLakeMergeSink
         }
         TrinoInputFile inputFile = fileSystem.newInputFile(Location.of(path.toStringUtf8()));
         try (ParquetDataSource dataSource = new TrinoParquetDataSource(inputFile, parquetReaderOptions, fileFormatDataSourceStats)) {
-            ParquetMetadata parquetMetadata = MetadataReader.readFooter(dataSource, Optional.empty());
+            ParquetMetadata parquetMetadata = MetadataReader.readFooter(dataSource, parquetReaderOptions, Optional.empty(), Optional.empty());
             long rowCount = parquetMetadata.getBlocks().stream().map(BlockMetadata::rowCount).mapToLong(Long::longValue).sum();
             RoaringBitmapArray rowsRetained = new RoaringBitmapArray();
             rowsRetained.addRange(0, rowCount - 1);
@@ -518,6 +520,7 @@ public class DeltaLakeMergeSink
                 .setMaxBlockSize(getParquetWriterBlockSize(session))
                 .setMaxPageSize(getParquetWriterPageSize(session))
                 .setMaxPageValueCount(getParquetWriterPageValueCount(session))
+                .setUseDeltaLengthByteArrayEncoding(useDeltaLengthByteArrayEncoding)
                 .build();
         CompressionCodec compressionCodec = toCompressionCodec(getCompressionCodec(session)).getParquetCompressionCodec()
                 .orElseThrow(); // validated on the session property level

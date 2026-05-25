@@ -85,7 +85,10 @@ public class ConfluentModule
         install(new ConfluentDecoderModule());
         install(new ConfluentEncoderModule());
         binder.bind(ContentSchemaProvider.class).to(ConfluentContentSchemaProvider.class).in(Scopes.SINGLETON);
-        newSetBinder(binder, SchemaRegistryClientPropertiesProvider.class);
+        newSetBinder(binder, SchemaRegistryClientPropertiesProvider.class)
+                .addBinding()
+                .to(SchemaRegistryClientTtlProvider.class)
+                .in(SINGLETON);
         newSetBinder(binder, SchemaProvider.class).addBinding().to(AvroSchemaProvider.class).in(Scopes.SINGLETON);
         // Each SchemaRegistry object should have a new instance of SchemaProvider
         newSetBinder(binder, SchemaProvider.class).addBinding().to(LazyLoadedProtobufSchemaProvider.class);
@@ -159,10 +162,10 @@ public class ConfluentModule
         public void configure(Binder binder)
         {
             MapBinder<String, RowEncoderFactory> encoderFactoriesByName = encoderFactory(binder);
-            encoderFactoriesByName.addBinding(AvroRowEncoder.NAME).toInstance((session, rowEncoderSpec) -> {
+            encoderFactoriesByName.addBinding(AvroRowEncoder.NAME).toInstance((_, _) -> {
                 throw new TrinoException(NOT_SUPPORTED, "Insert not supported");
             });
-            encoderFactoriesByName.addBinding(ProtobufRowEncoder.NAME).toInstance((session, rowEncoderSpec) -> {
+            encoderFactoriesByName.addBinding(ProtobufRowEncoder.NAME).toInstance((_, _) -> {
                 throw new TrinoException(NOT_SUPPORTED, "Insert is not supported for schema registry based tables");
             });
             binder.bind(DispatchingRowEncoderFactory.class).in(SINGLETON);

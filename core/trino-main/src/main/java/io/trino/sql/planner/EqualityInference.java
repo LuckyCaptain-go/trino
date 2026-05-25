@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSetMultimap;
 import com.google.common.collect.Multimap;
+import io.trino.sql.PlannerContext;
 import io.trino.sql.ir.Comparison;
 import io.trino.sql.ir.Expression;
 import io.trino.sql.ir.IrUtils;
@@ -34,6 +35,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Predicate;
@@ -41,10 +43,10 @@ import java.util.function.ToIntFunction;
 import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.sql.ir.IrExpressions.mayReturnNullOnNonNullInput;
 import static io.trino.sql.ir.IrUtils.extractConjuncts;
 import static io.trino.sql.planner.DeterminismEvaluator.isDeterministic;
 import static io.trino.sql.planner.ExpressionNodeInliner.replaceExpression;
-import static io.trino.sql.planner.NullabilityAnalyzer.mayReturnNullOnNonNullInput;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -61,17 +63,19 @@ public class EqualityInference
     private final Map<Expression, List<Symbol>> symbolsCache = new HashMap<>();
     private final Map<Expression, Set<Symbol>> uniqueSymbolsCache = new HashMap<>();
 
-    public EqualityInference(Expression... expressions)
+    public EqualityInference(PlannerContext plannerContext, Expression... expressions)
     {
-        this(Arrays.asList(expressions));
+        this(plannerContext, Arrays.asList(expressions));
     }
 
-    public EqualityInference(Collection<Expression> expressions)
+    public EqualityInference(PlannerContext plannerContext, Collection<Expression> expressions)
     {
+        requireNonNull(plannerContext, "plannerContext is null");
+
         DisjointSet<Expression> equalities = new DisjointSet<>();
         expressions.stream()
                 .flatMap(expression -> extractConjuncts(expression).stream())
-                .filter(EqualityInference::isInferenceCandidate)
+                .filter(expression -> isInferenceCandidate(plannerContext, expression))
                 .forEach(expression -> {
                     Comparison comparison = (Comparison) expression;
                     Expression expression1 = comparison.left();
@@ -122,7 +126,7 @@ public class EqualityInference
         Multimap<Expression, Expression> equalitySets = makeEqualitySets(equalities, canonicalComparator);
 
         ImmutableMap.Builder<Expression, Expression> canonicalMappings = ImmutableMap.builder();
-        for (Map.Entry<Expression, Expression> entry : equalitySets.entries()) {
+        for (Entry<Expression, Expression> entry : equalitySets.entries()) {
             Expression canonical = entry.getKey();
             Expression expression = entry.getValue();
             canonicalMappings.put(expression, canonical);
@@ -254,11 +258,11 @@ public class EqualityInference
     /**
      * Determines whether an Expression may be successfully applied to the equality inference
      */
-    public static boolean isInferenceCandidate(Expression expression)
+    public static boolean isInferenceCandidate(PlannerContext plannerContext, Expression expression)
     {
         if (expression instanceof Comparison comparison &&
                 isDeterministic(expression) &&
-                !mayReturnNullOnNonNullInput(expression)) {
+                !mayReturnNullOnNonNullInput(plannerContext, expression)) {
             if (comparison.operator() == Comparison.Operator.EQUAL) {
                 // We should only consider equalities that have distinct left and right components
                 return !comparison.left().equals(comparison.right());
@@ -270,10 +274,10 @@ public class EqualityInference
     /**
      * Provides a convenience Stream of Expression conjuncts which have not been added to the inference
      */
-    public static Stream<Expression> nonInferrableConjuncts(Expression expression)
+    public static Stream<Expression> nonInferrableConjuncts(PlannerContext plannerContext, Expression expression)
     {
         return extractConjuncts(expression).stream()
-                .filter(e -> !isInferenceCandidate(e));
+                .filter(e -> !isInferenceCandidate(plannerContext, e));
     }
 
     private Expression rewrite(Expression expression, Predicate<Symbol> symbolScope, boolean allowFullReplacement)
@@ -282,7 +286,7 @@ public class EqualityInference
         extractSubExpressions(expression)
                 .stream()
                 .filter(allowFullReplacement
-                        ? subExpression -> true
+                        ? _ -> true
                         : subExpression -> !subExpression.equals(expression))
                 .forEach(subExpression -> {
                     Expression canonical = getScopedCanonical(subExpression, symbolScope);
@@ -362,7 +366,7 @@ public class EqualityInference
 
     private Set<Symbol> extractUniqueSymbols(Expression expression)
     {
-        return uniqueSymbolsCache.computeIfAbsent(expression, e -> ImmutableSet.copyOf(extractAllSymbols(expression)));
+        return uniqueSymbolsCache.computeIfAbsent(expression, _ -> ImmutableSet.copyOf(extractAllSymbols(expression)));
     }
 
     private List<Symbol> extractAllSymbols(Expression expression)

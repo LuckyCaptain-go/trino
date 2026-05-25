@@ -216,7 +216,8 @@ public final class ShowQueriesRewrite
             Statement node,
             List<Expression> parameters,
             Map<NodeRef<Parameter>, Expression> parameterLookup,
-            WarningCollector warningCollector, PlanOptimizersStatsCollector planOptimizersStatsCollector)
+            WarningCollector warningCollector,
+            PlanOptimizersStatsCollector planOptimizersStatsCollector)
     {
         Visitor visitor = new Visitor(session);
         return (Statement) visitor.process(node, null);
@@ -658,7 +659,7 @@ public final class ShowQueriesRewrite
                                 column.getDefaultValue().map(value -> parseDefaultColumnValueExpression(value, objectName, node)),
                                 column.isNullable(),
                                 propertyNodes,
-                                Optional.ofNullable(column.getComment()));
+                                column.getComment());
                     })
                     .collect(toImmutableList());
 

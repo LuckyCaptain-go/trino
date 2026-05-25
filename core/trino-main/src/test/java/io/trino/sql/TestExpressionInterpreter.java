@@ -20,6 +20,7 @@ import io.airlift.slice.Slices;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.metadata.TestingFunctionResolution;
 import io.trino.spi.function.OperatorType;
+import io.trino.spi.type.RowType;
 import io.trino.sql.ir.Between;
 import io.trino.sql.ir.Call;
 import io.trino.sql.ir.Case;
@@ -37,8 +38,6 @@ import io.trino.sql.ir.Reference;
 import io.trino.sql.ir.Row;
 import io.trino.sql.ir.Switch;
 import io.trino.sql.ir.WhenClause;
-import io.trino.sql.ir.optimizer.IrExpressionEvaluator;
-import io.trino.sql.ir.optimizer.IrExpressionOptimizer;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.assertions.SymbolAliases;
 import io.trino.transaction.TestingTransactionManager;
@@ -743,7 +742,7 @@ public class TestExpressionInterpreter
                 new Constant(INTEGER, 6L));
         assertOptimizedMatches(
                 new Coalesce(new Call(RANDOM, ImmutableList.of()), new Call(RANDOM, ImmutableList.of()), new Constant(DOUBLE, 5.0)),
-                new Coalesce(new Call(RANDOM, ImmutableList.of()), new Call(RANDOM, ImmutableList.of()), new Constant(DOUBLE, 5.0)));
+                new Call(RANDOM, ImmutableList.of()));
 
         assertOptimizedEquals(
                 new Coalesce(new Constant(UNKNOWN, null), new Coalesce(new Constant(UNKNOWN, null), new Constant(UNKNOWN, null))),
@@ -878,6 +877,9 @@ public class TestExpressionInterpreter
         assertOptimizedEquals(
                 new FieldReference(new Row(ImmutableList.of(new Constant(INTEGER, 1L), new Constant(UNKNOWN, null))), 1),
                 new Constant(UNKNOWN, null));
+        assertEvaluatedEquals(
+                new FieldReference(new Constant(RowType.anonymousRow(INTEGER, VARCHAR), null), 1),
+                new Constant(VARCHAR, null));
         assertOptimizedEquals(
                 new FieldReference(new Row(ImmutableList.of(new Call(DIVIDE_INTEGER, ImmutableList.of(new Constant(INTEGER, 0L), new Constant(INTEGER, 0L))), new Constant(INTEGER, 1L))), 0),
                 new FieldReference(new Row(ImmutableList.of(new Call(DIVIDE_INTEGER, ImmutableList.of(new Constant(INTEGER, 0L), new Constant(INTEGER, 0L))), new Constant(INTEGER, 1L))), 0));
@@ -915,7 +917,7 @@ public class TestExpressionInterpreter
 
     static Object optimize(Expression parsedExpression)
     {
-        return IrExpressionOptimizer.newOptimizer(PLANNER_CONTEXT).process(parsedExpression, TEST_SESSION, INPUTS)
+        return PLANNER_CONTEXT.getExpressionOptimizer().process(parsedExpression, TEST_SESSION, INPUTS)
                 .orElse(parsedExpression);
     }
 
@@ -926,6 +928,6 @@ public class TestExpressionInterpreter
 
     private static Object evaluate(Expression expression)
     {
-        return new IrExpressionEvaluator(PLANNER_CONTEXT).evaluate(expression, TEST_SESSION, ImmutableMap.of());
+        return PLANNER_CONTEXT.getExpressionEvaluator().evaluate(expression, TEST_SESSION, ImmutableMap.of());
     }
 }

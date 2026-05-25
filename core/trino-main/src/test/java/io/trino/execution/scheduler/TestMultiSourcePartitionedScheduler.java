@@ -97,6 +97,7 @@ import static io.trino.execution.scheduler.ScheduleResult.BlockedReason.SPLIT_QU
 import static io.trino.execution.scheduler.ScheduleResult.BlockedReason.WAITING_FOR_SOURCE;
 import static io.trino.execution.scheduler.StageExecution.State.PLANNED;
 import static io.trino.execution.scheduler.StageExecution.State.SCHEDULING;
+import static io.trino.metadata.AbstractMockMetadata.dummyMetadata;
 import static io.trino.metadata.FunctionManager.createTestingFunctionManager;
 import static io.trino.metadata.TestingMetadataManager.createTestingMetadataManager;
 import static io.trino.node.TestingInternalNodeManager.CURRENT_NODE;
@@ -591,7 +592,7 @@ public class TestMultiSourcePartitionedScheduler
 
     private static ConnectorSplitSource createFixedSplitSource(int splitCount)
     {
-        return new FixedSplitSource(IntStream.range(0, splitCount).mapToObj(ix -> new TestingSplit(true, ImmutableList.of())).toList());
+        return new FixedSplitSource(IntStream.range(0, splitCount).mapToObj(_ -> new TestingSplit(true, ImmutableList.of())).toList());
     }
 
     private SplitPlacementPolicy createSplitPlacementPolicies(Session session, StageExecution stage, NodeTaskMap nodeTaskMap, InternalNodeManager nodeManager)
@@ -601,7 +602,7 @@ public class TestMultiSourcePartitionedScheduler
                 .setMaxSplitsPerNode(100)
                 .setMinPendingSplitsPerTask(0)
                 .setSplitsBalancingPolicy(STAGE);
-        NodeScheduler nodeScheduler = new NodeScheduler(new UniformNodeSelectorFactory(CURRENT_NODE, nodeManager, nodeSchedulerConfig, nodeTaskMap, new Duration(0, SECONDS)));
+        NodeScheduler nodeScheduler = new NodeScheduler(new UniformNodeSelectorFactory(CURRENT_NODE, nodeManager, nodeSchedulerConfig, nodeTaskMap, new ConsistentHashingAddressProvider(nodeManager, new ConsistentHashingAddressProviderConfig()), new Duration(0, SECONDS)));
         return new DynamicSplitPlacementPolicy(nodeScheduler.createNodeSelector(session), stage::getAllTasks);
     }
 
@@ -609,6 +610,7 @@ public class TestMultiSourcePartitionedScheduler
     {
         StageId stageId = new StageId(QUERY_ID, 0);
         SqlStage stage = SqlStage.createSqlStage(
+                dummyMetadata(),
                 stageId,
                 fragment,
                 ImmutableMap.of(
@@ -675,7 +677,7 @@ public class TestMultiSourcePartitionedScheduler
         public CompletableFuture<ConnectorSplitBatch> getNextBatch(int maxSize)
         {
             return notEmptyFuture
-                    .thenApply(x -> getBatch(maxSize))
+                    .thenApply(_ -> getBatch(maxSize))
                     .thenApply(splits -> new ConnectorSplitBatch(splits, isFinished()));
         }
 

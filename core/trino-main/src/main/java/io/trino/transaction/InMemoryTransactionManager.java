@@ -63,6 +63,7 @@ import static io.trino.spi.StandardErrorCode.CATALOG_NOT_FOUND;
 import static io.trino.spi.StandardErrorCode.MULTI_CATALOG_WRITE_CONFLICT;
 import static io.trino.spi.StandardErrorCode.READ_ONLY_VIOLATION;
 import static io.trino.spi.StandardErrorCode.TRANSACTION_ALREADY_ABORTED;
+import static io.trino.spi.StandardErrorCode.TRANSACTION_ALREADY_COMMITED;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.stream.Collectors.toList;
@@ -203,6 +204,14 @@ public class InMemoryTransactionManager
     }
 
     @Override
+    public Optional<CatalogInfo> getOptionalCatalogInfo(TransactionId transactionId, String catalogName)
+    {
+        TransactionMetadata transactionMetadata = getTransactionMetadata(transactionId);
+        return getCatalogHandle(transactionId, catalogName)
+                .flatMap(transactionMetadata::getActiveCatalog);
+    }
+
+    @Override
     public CatalogMetadata getCatalogMetadata(TransactionId transactionId, CatalogHandle catalogHandle)
     {
         return getTransactionMetadata(transactionId).getTransactionCatalogMetadata(catalogHandle);
@@ -313,7 +322,7 @@ public class InMemoryTransactionManager
 
     private static <T> ListenableFuture<Void> asVoid(ListenableFuture<T> future)
     {
-        return Futures.transform(future, v -> null, directExecutor());
+        return Futures.transform(future, _ -> null, directExecutor());
     }
 
     @ThreadSafe
@@ -376,7 +385,7 @@ public class InMemoryTransactionManager
             if (completedStatus != null) {
                 if (completedStatus) {
                     // Should not happen normally
-                    throw new IllegalStateException("Current transaction already committed");
+                    throw new TrinoException(TRANSACTION_ALREADY_COMMITED, "Current transaction already committed");
                 }
                 throw new TrinoException(TRANSACTION_ALREADY_ABORTED, "Current transaction is aborted, commands ignored until end of transaction block");
             }
@@ -389,8 +398,16 @@ public class InMemoryTransactionManager
                     .distinct()
                     .map(key -> registeredCatalogs.getOrDefault(key, Optional.empty()))
                     .flatMap(Optional::stream)
-                    .map(catalog -> new CatalogInfo(catalog.getCatalogName().toString(), catalog.getCatalogHandle(), catalog.getConnectorName(), catalog.getCatalogStatus()))
+                    .map(Catalog::toInfo)
                     .collect(toImmutableList());
+        }
+
+        private synchronized Optional<CatalogInfo> getActiveCatalog(CatalogHandle catalogHandle)
+        {
+            return Optional.ofNullable(activeCatalogs.get(catalogHandle))
+                    .map(CatalogMetadata::getCatalogName)
+                    .flatMap(key -> registeredCatalogs.getOrDefault(key, Optional.empty()))
+                    .map(Catalog::toInfo);
         }
 
         private synchronized List<CatalogInfo> listCatalogs()
@@ -402,7 +419,7 @@ public class InMemoryTransactionManager
             return registeredCatalogs.values().stream()
                     .filter(Optional::isPresent)
                     .map(Optional::get)
-                    .map(catalog -> new CatalogInfo(catalog.getCatalogName().toString(), catalog.getCatalogHandle(), catalog.getConnectorName(), catalog.getCatalogStatus()))
+                    .map(Catalog::toInfo)
                     .collect(toImmutableList());
         }
 
@@ -505,7 +522,7 @@ public class InMemoryTransactionManager
             if (!completedSuccessfully.compareAndSet(null, false)) {
                 if (completedSuccessfully.get()) {
                     // Should not happen normally
-                    return immediateFailedFuture(new IllegalStateException("Current transaction already committed"));
+                    return immediateFailedFuture(new TrinoException(TRANSACTION_ALREADY_COMMITED, "Current transaction already committed"));
                 }
                 // Already done
                 return immediateVoidFuture();

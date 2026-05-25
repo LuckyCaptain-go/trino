@@ -13,12 +13,13 @@
  */
 package io.trino.execution;
 
+import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.json.JsonCodec;
 import io.airlift.json.JsonCodecFactory;
-import io.airlift.json.ObjectMapperProvider;
+import io.airlift.json.JsonMapperProvider;
 import io.trino.Session;
 import io.trino.connector.MockConnectorFactory;
 import io.trino.connector.MockConnectorTableHandle;
@@ -117,6 +118,7 @@ public class TestEventListenerBasic
     private static final String VARCHAR_TYPE = "varchar(15)";
     private static final String BIGINT_TYPE = BIGINT.getDisplayName();
     private static final Metrics TEST_METRICS = new Metrics(ImmutableMap.of("test_metrics", new LongCount(1)));
+    private static final Metrics TEST_SPLIT_SOURCE_METRICS = new Metrics(ImmutableMap.of("test_split_source_metrics", new LongCount(2)));
 
     private EventsAwaitingQueries queries;
 
@@ -147,7 +149,7 @@ public class TestEventListenerBasic
             public Iterable<ConnectorFactory> getConnectorFactories()
             {
                 MockConnectorFactory connectorFactory = MockConnectorFactory.builder()
-                        .withListTables((session, schemaName) -> {
+                        .withListTables((_, schemaName) -> {
                             return switch (schemaName) {
                                 case "default" -> List.of("tests_table");
                                 case "tiny" -> List.of("nation");
@@ -167,19 +169,19 @@ public class TestEventListenerBasic
                                     new ColumnMetadata("test_varchar_array", new ArrayType(createVarcharType(15))),
                                     new ColumnMetadata("test_bigint_array", new ArrayType(BIGINT)));
                         })
-                        .withGetTableHandle((session, schemaTableName) -> {
+                        .withGetTableHandle((_, schemaTableName) -> {
                             if (!schemaTableName.getTableName().startsWith("create")) {
                                 return new MockConnectorTableHandle(schemaTableName);
                             }
                             return null;
                         })
-                        .withApplyProjection((session, handle, projections, assignments) -> {
+                        .withApplyProjection((_, handle, _, _) -> {
                             if (((MockConnectorTableHandle) handle).getTableName().getTableName().equals("tests_table")) {
                                 throw new RuntimeException("Throw from apply projection");
                             }
                             return Optional.empty();
                         })
-                        .withGetViews((connectorSession, prefix) ->
+                        .withGetViews((_, _) ->
                                 ImmutableMap.of(
                                         new SchemaTableName("default", "test_view"), new ConnectorViewDefinition(
                                                 "SELECT nationkey AS test_column FROM tpch.tiny.nation",
@@ -217,7 +219,7 @@ public class TestEventListenerBasic
                                                 Optional.empty(),
                                                 true,
                                                 ImmutableList.of())))
-                        .withGetMaterializedViews((connectorSession, prefix) -> {
+                        .withGetMaterializedViews((_, _) -> {
                             ConnectorMaterializedViewDefinition definitionStale = new ConnectorMaterializedViewDefinition(
                                     "SELECT nationkey AS test_column FROM tpch.tiny.nation",
                                     Optional.of(new CatalogSchemaTableName("mock", "default", "test_materialized_view_stale$materialized_view_storage")),
@@ -247,7 +249,7 @@ public class TestEventListenerBasic
                                     staleMaterializedViewName, definitionStale,
                                     new SchemaTableName("default", "test_materialized_view_fresh"), definitionFresh);
                         })
-                        .withGetMaterializedViewsFreshness((session, materializedViewName) -> {
+                        .withGetMaterializedViewsFreshness((_, materializedViewName) -> {
                             if (materializedViewName.equals(staleMaterializedViewName)) {
                                 return new MaterializedViewFreshness(STALE, Optional.empty());
                             }
@@ -262,6 +264,12 @@ public class TestEventListenerBasic
                         .withMetrics(schemaTableName -> {
                             if (schemaTableName.equals(new SchemaTableName("tiny", "nation"))) {
                                 return TEST_METRICS;
+                            }
+                            return EMPTY;
+                        })
+                        .withSplitSourceMetrics(schemaTableName -> {
+                            if (schemaTableName.equals(new SchemaTableName("tiny", "nation"))) {
+                                return TEST_SPLIT_SOURCE_METRICS;
                             }
                             return EMPTY;
                         })
@@ -287,7 +295,7 @@ public class TestEventListenerBasic
                             }
                             return null;
                         })
-                        .withRedirectTable((session, schemaTableName) -> {
+                        .withRedirectTable((_, schemaTableName) -> {
                             if (schemaTableName.getTableName().equals("nation_redirect")) {
                                 return Optional.of(new CatalogSchemaTableName("tpch", "tiny", "nation"));
                             }
@@ -802,8 +810,7 @@ public class TestEventListenerBasic
             throws Exception
     {
         QueryEvents queryEvents = runQueryAndWaitForEvents(
-                "CREATE TABLE mock.default.create_table_with_referring_mask AS SELECT test_varchar, test_bigint FROM mock.default.test_table_with_column_mask"
-        ).getQueryEvents();
+                "CREATE TABLE mock.default.create_table_with_referring_mask AS SELECT test_varchar, test_bigint FROM mock.default.test_table_with_column_mask").getQueryEvents();
 
         QueryCompletedEvent event = queryEvents.getQueryCompletedEvent();
 
@@ -1427,7 +1434,7 @@ public class TestEventListenerBasic
         List<Metrics> connectorMetrics = event.getIoMetadata().getInputs().stream()
                 .map(QueryInputMetadata::getConnectorMetrics)
                 .collect(toImmutableList());
-        assertThat(connectorMetrics).containsExactly(TEST_METRICS);
+        assertThat(connectorMetrics).containsExactly(TEST_METRICS.mergeWith(TEST_SPLIT_SOURCE_METRICS));
     }
 
     @Test
@@ -1506,15 +1513,15 @@ public class TestEventListenerBasic
         assertThat(event.getStatistics().getPlanNodeStatsAndCosts()).isPresent();
 
         TypeManager typeManager = getQueryRunner().getPlannerContext().getTypeManager();
-        ObjectMapperProvider provider = new ObjectMapperProvider();
-        provider.setKeyDeserializers(ImmutableMap.of(
-                Symbol.class, new SymbolKeyDeserializer(typeManager),
-                TypeSignature.class, new TypeSignatureKeyDeserializer()));
+        JsonMapper jsonMapper = new JsonMapperProvider()
+                .withKeyDeserializers(ImmutableMap.of(
+                        Symbol.class, new SymbolKeyDeserializer(typeManager),
+                        TypeSignature.class, new TypeSignatureKeyDeserializer()))
+                .withJsonDeserializers(ImmutableMap.of(
+                        Type.class, new TypeDeserializer(typeManager)))
+                .get();
 
-        provider.setJsonDeserializers(ImmutableMap.of(
-                Type.class, new TypeDeserializer(typeManager::getType)));
-
-        JsonCodec<StatsAndCosts> codec = new JsonCodecFactory(provider).jsonCodec(StatsAndCosts.class);
+        JsonCodec<StatsAndCosts> codec = new JsonCodecFactory(jsonMapper).jsonCodec(StatsAndCosts.class);
 
         StatsAndCosts statsAndCosts = codec.fromJson(event.getStatistics().getPlanNodeStatsAndCosts().get());
         assertThat(statsAndCosts.getStats().values()).allMatch(stats -> stats.getOutputRowCount() == 25.0);

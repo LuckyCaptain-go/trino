@@ -112,7 +112,7 @@ public abstract class BaseMySqlConnectorTest
         return new TestTable(
                 onRemoteDatabase(),
                 "tpch.test_unsupported_column_present",
-                "(one bigint, two decimal(50,0), three varchar(10))");
+                "(one bigint, two bit(10), three varchar(10))");
     }
 
     @Test
@@ -209,8 +209,7 @@ public abstract class BaseMySqlConnectorTest
                 WITH (
                    primary_key = ARRAY['a']
                 )\
-                """
-        );
+                """);
 
         verifyCreateTableDefinition(
                 "(a bigint NOT NULL, b bigint NOT NULL, c bigint) WITH (primary_key = ARRAY['a', 'b'])",
@@ -223,8 +222,7 @@ public abstract class BaseMySqlConnectorTest
                 WITH (
                    primary_key = ARRAY['a','b']
                 )\
-                """
-        );
+                """);
 
         verifyCreateTableDefinition(
                 "(a bigint NOT NULL, b bigint NOT NULL, c bigint) WITH (primary_key = ARRAY['b', 'a'])",
@@ -237,8 +235,7 @@ public abstract class BaseMySqlConnectorTest
                 WITH (
                    primary_key = ARRAY['b','a']
                 )\
-                """
-        );
+                """);
 
         verifyCreateTableDefinition(
                 "(a bigint NOT NULL, b bigint NOT NULL, c bigint NOT NULL, d bigint) WITH (primary_key = ARRAY['b', 'c', 'a'])",
@@ -252,8 +249,7 @@ public abstract class BaseMySqlConnectorTest
                 WITH (
                    primary_key = ARRAY['b','c','a']
                 )\
-                """
-        );
+                """);
     }
 
     private void verifyCreateTableDefinition(String tableDefinition, String showCreateTableFormat)
@@ -282,17 +278,16 @@ public abstract class BaseMySqlConnectorTest
     public void testCreateTableWithUnsupportedKey()
     {
         verifyTableDefinitionWithUnsupportedKey(
-                "(a decimal(50,0), b bigint, c bigint, PRIMARY KEY(a))",
+                "(a bit(10), b bigint, c bigint, PRIMARY KEY(a))",
                 """
                 CREATE TABLE %s.%s.%s (
                    b bigint,
                    c bigint
                 )\
-                """
-        );
+                """);
 
         verifyTableDefinitionWithUnsupportedKey(
-                "(a decimal(50,0), b bigint, c bigint, PRIMARY KEY(a, b))",
+                "(a bit(10), b bigint, c bigint, PRIMARY KEY(a, b))",
                 """
                 CREATE TABLE %s.%s.%s (
                    b bigint NOT NULL,
@@ -301,11 +296,10 @@ public abstract class BaseMySqlConnectorTest
                 WITH (
                    primary_key = ARRAY['b']
                 )\
-                """
-        );
+                """);
 
         verifyTableDefinitionWithUnsupportedKey(
-                "(a decimal(50,0), b bigint, c bigint, d bigint, PRIMARY KEY(a, b, c))",
+                "(a bit(10), b bigint, c bigint, d bigint, PRIMARY KEY(a, b, c))",
                 """
                 CREATE TABLE %s.%s.%s (
                    b bigint NOT NULL,
@@ -315,11 +309,10 @@ public abstract class BaseMySqlConnectorTest
                 WITH (
                    primary_key = ARRAY['b','c']
                 )\
-                """
-        );
+                """);
 
         verifyTableDefinitionWithUnsupportedKey(
-                "(a decimal(50,0), b bigint, c bigint, d bigint, PRIMARY KEY(a, c, b))",
+                "(a bit(10), b bigint, c bigint, d bigint, PRIMARY KEY(a, c, b))",
                 """
                 CREATE TABLE %s.%s.%s (
                    b bigint NOT NULL,
@@ -329,11 +322,10 @@ public abstract class BaseMySqlConnectorTest
                 WITH (
                    primary_key = ARRAY['c','b']
                 )\
-                """
-        );
+                """);
 
         verifyTableDefinitionWithUnsupportedKey(
-                "(a decimal(50,0), b bigint, c decimal(50,0), d bigint, PRIMARY KEY(a, b, c))",
+                "(a bit(10), b bigint, c bit(10), d bigint, PRIMARY KEY(a, b, c))",
                 """
                 CREATE TABLE %s.%s.%s (
                    b bigint NOT NULL,
@@ -342,8 +334,7 @@ public abstract class BaseMySqlConnectorTest
                 WITH (
                    primary_key = ARRAY['b']
                 )\
-                """
-        );
+                """);
     }
 
     private void verifyTableDefinitionWithUnsupportedKey(String tableDefinition, String showCreateTableFormat)
@@ -701,13 +692,13 @@ public abstract class BaseMySqlConnectorTest
     {
         // MySQL JDBC driver < 8.0.29 didn't return metadata when the query contained a WITH clause
         assertQuery(
-                    """
-                    SELECT * FROM TABLE(mysql.system.query(query => '
-                    WITH t AS (SELECT DISTINCT custkey FROM tpch.orders)
-                    SELECT custkey, name FROM tpch.customer
-                    WHERE custkey = 1
-                    '))
-                    """,
+                """
+                SELECT * FROM TABLE(mysql.system.query(query => '
+                WITH t AS (SELECT DISTINCT custkey FROM tpch.orders)
+                SELECT custkey, name FROM tpch.customer
+                WHERE custkey = 1
+                '))
+                """,
                 "VALUES (1, 'Customer#000000001')");
     }
 

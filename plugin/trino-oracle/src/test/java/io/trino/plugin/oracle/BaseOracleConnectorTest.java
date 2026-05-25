@@ -117,7 +117,7 @@ public abstract class BaseOracleConnectorTest
         return new TestTable(
                 onRemoteDatabase(),
                 "test_unsupported_col",
-                "(one NUMBER(19), two NUMBER, three VARCHAR2(10 CHAR))");
+                "(one NUMBER(19), two BFILE, three VARCHAR2(10 CHAR))");
     }
 
     @Test
@@ -403,7 +403,8 @@ public abstract class BaseOracleConnectorTest
                 Session.builder(getSession())
                         .setCatalogSessionProperty("oracle", "domain_compaction_threshold", "10000")
                         .build(),
-                "SELECT * from nation", "Domain compaction threshold \\(10000\\) cannot exceed 1000");
+                "SELECT * from nation",
+                "Domain compaction threshold \\(10000\\) cannot exceed 1000");
     }
 
     @Test

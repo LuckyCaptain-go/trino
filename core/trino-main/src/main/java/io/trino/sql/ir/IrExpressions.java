@@ -16,45 +16,52 @@ package io.trino.sql.ir;
 import com.google.common.collect.ImmutableList;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.ResolvedFunction;
-import io.trino.spi.function.CatalogSchemaFunctionName;
+import io.trino.spi.type.BigintType;
+import io.trino.spi.type.DecimalType;
+import io.trino.spi.type.DoubleType;
+import io.trino.spi.type.Int128;
+import io.trino.spi.type.IntegerType;
+import io.trino.spi.type.NumberType;
+import io.trino.spi.type.RealType;
 import io.trino.spi.type.RowType;
+import io.trino.spi.type.SmallintType;
+import io.trino.spi.type.TinyintType;
+import io.trino.spi.type.TrinoNumber;
+import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
 import io.trino.type.TypeCoercion;
 
+import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.List;
 
 import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
 import static io.trino.spi.block.RowValueBuilder.buildRowValue;
+import static io.trino.spi.function.OperatorType.DIVIDE;
+import static io.trino.spi.function.OperatorType.MODULO;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.TypeUtils.writeNativeValue;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.DynamicFilters.isDynamicFilterFunction;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
-import static io.trino.type.LikeFunctions.LIKE_FUNCTION_NAME;
 
 public final class IrExpressions
 {
-    // TODO: these should be attributes of the function
-    private static final List<CatalogSchemaFunctionName> NEVER_FAIL = ImmutableList.of(
-            builtinFunctionName("length"),
-            builtinFunctionName("try_cast"),
-            builtinFunctionName("$not"),
-            builtinFunctionName("substring"),
-            builtinFunctionName("trim"),
-            builtinFunctionName("ltrim"),
-            builtinFunctionName("rtrim"),
-            builtinFunctionName("replace"),
-            builtinFunctionName("reverse"),
-            builtinFunctionName("lower"),
-            builtinFunctionName("upper"),
-            builtinFunctionName("to_utf8"),
-            builtinFunctionName(LIKE_FUNCTION_NAME));
-
     private IrExpressions() {}
+
+    public static Constant constantNull(Type type)
+    {
+        return new Constant(type, null);
+    }
+
+    public static Call call(ResolvedFunction function, Expression... arguments)
+    {
+        return new Call(function, Arrays.asList(arguments));
+    }
 
     public static Expression ifExpression(Expression condition, Expression trueCase)
     {
-        return new Case(ImmutableList.of(new WhenClause(condition, trueCase)), new Constant(trueCase.type(), null));
+        return new Case(ImmutableList.of(new WhenClause(condition, trueCase)), constantNull(trueCase.type()));
     }
 
     public static Expression ifExpression(Expression condition, Expression trueCase, Expression falseCase)
@@ -82,26 +89,89 @@ public final class IrExpressions
         return expression instanceof Constant constant && constant.value() == null;
     }
 
+    public static boolean mayBeNull(PlannerContext plannerContext, Expression expression)
+    {
+        return mayBeNull(plannerContext, expression, true);
+    }
+
+    /**
+     * Returns true if the expression may return null when all symbol inputs are non-null.
+     */
+    public static boolean mayReturnNullOnNonNullInput(PlannerContext plannerContext, Expression expression)
+    {
+        return mayBeNull(plannerContext, expression, false);
+    }
+
+    private static boolean mayBeNull(PlannerContext plannerContext, Expression expression, boolean referencesMayBeNull)
+    {
+        return switch (expression) {
+            // These expressions never return null
+            case Array _, Bind _, IsNull _, Lambda _, Row _ -> false;
+
+            // These expressions may return null based on their operands
+            case Between e -> mayBeNull(plannerContext, e.value(), referencesMayBeNull) || mayBeNull(plannerContext, e.min(), referencesMayBeNull) || mayBeNull(plannerContext, e.max(), referencesMayBeNull);
+            case Call e -> mayBeNull(plannerContext, e.function(), e.arguments(), referencesMayBeNull);
+            case Case e -> e.whenClauses().stream().anyMatch(clause -> mayBeNull(plannerContext, clause.getResult(), referencesMayBeNull)) ||
+                    mayBeNull(plannerContext, e.defaultValue(), referencesMayBeNull);
+            case Cast e -> mayBeNull(plannerContext, e, referencesMayBeNull);
+            case Coalesce e -> e.operands().stream().allMatch(operand -> mayBeNull(plannerContext, operand, referencesMayBeNull));
+            case Comparison e -> e.operator() != Comparison.Operator.IDENTICAL && (mayBeNull(plannerContext, e.left(), referencesMayBeNull) || mayBeNull(plannerContext, e.right(), referencesMayBeNull));
+            case In e -> mayBeNull(plannerContext, e.value(), referencesMayBeNull) || e.valueList().stream().anyMatch(value -> mayBeNull(plannerContext, value, referencesMayBeNull));
+            case Logical e -> e.terms().stream().anyMatch(term -> mayBeNull(plannerContext, term, referencesMayBeNull));
+            case Switch e -> e.whenClauses().stream().anyMatch(clause -> mayBeNull(plannerContext, clause.getResult(), referencesMayBeNull)) ||
+                    mayBeNull(plannerContext, e.defaultValue(), referencesMayBeNull);
+
+            // These expressions may return null based on their own semantics
+            case Constant e -> e.value() == null;
+            case FieldReference _, NullIf _ -> true;
+            case Reference _ -> referencesMayBeNull;
+        };
+    }
+
+    private static boolean mayBeNull(PlannerContext plannerContext, Cast cast, boolean referencesMayBeNull)
+    {
+        if (cast.expression().type().equals(cast.type())) {
+            return mayBeNull(plannerContext, cast.expression(), referencesMayBeNull);
+        }
+
+        ResolvedFunction coercion = plannerContext.getMetadata().getCoercion(cast.expression().type(), cast.type());
+        return mayBeNull(plannerContext, coercion, ImmutableList.of(cast.expression()), referencesMayBeNull);
+    }
+
+    private static boolean mayBeNull(PlannerContext plannerContext, ResolvedFunction function, List<Expression> arguments, boolean referencesMayBeNull)
+    {
+        if (function.functionNullability().isReturnNullable()) {
+            return true;
+        }
+
+        for (int i = 0; i < arguments.size(); i++) {
+            if (!function.functionNullability().isArgumentNullable(i) && mayBeNull(plannerContext, arguments.get(i), referencesMayBeNull)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public static boolean mayFail(PlannerContext plannerContext, Expression expression)
     {
         return switch (expression) {
+            // These expressions never fail
+            case Bind _, Constant _, FieldReference _, Lambda _, Reference _ -> false;
+
+            // These expressions need to verify their operands
             case Array e -> e.elements().stream().anyMatch(element -> mayFail(plannerContext, element));
             case Between e -> mayFail(plannerContext, e.value()) || mayFail(plannerContext, e.min()) || mayFail(plannerContext, e.max());
-            case Bind e -> false;
-            case Call e -> mayFail(e.function()) || e.arguments().stream().anyMatch(argument -> mayFail(plannerContext, argument)); // TODO: allow functions to be marked as non-failing
+            case Call e -> mayFail(e) || e.arguments().stream().anyMatch(argument -> mayFail(plannerContext, argument));
             case Case e -> e.whenClauses().stream().anyMatch(clause -> mayFail(plannerContext, clause.getOperand()) || mayFail(plannerContext, clause.getResult())) ||
                     mayFail(plannerContext, e.defaultValue());
             case Cast e -> mayFail(plannerContext, e);
             case Coalesce e -> e.operands().stream().anyMatch(argument -> mayFail(plannerContext, argument));
             case Comparison e -> mayFail(plannerContext, e.left()) || mayFail(plannerContext, e.right());
-            case Constant e -> false;
-            case FieldReference e -> false;
             case In e -> mayFail(plannerContext, e.value()) || e.valueList().stream().anyMatch(argument -> mayFail(plannerContext, argument));
             case IsNull e -> mayFail(plannerContext, e.value());
-            case Lambda e -> false;
             case Logical e -> e.terms().stream().anyMatch(argument -> mayFail(plannerContext, argument));
             case NullIf e -> mayFail(plannerContext, e.first()) || mayFail(plannerContext, e.second());
-            case Reference e -> false;
             case Row e -> e.items().stream().anyMatch(argument -> mayFail(plannerContext, argument));
             case Switch e -> mayFail(plannerContext, e.operand()) || e.whenClauses().stream().anyMatch(clause -> mayFail(plannerContext, clause.getOperand()) || mayFail(plannerContext, clause.getResult())) ||
                     mayFail(plannerContext, e.defaultValue());
@@ -123,15 +193,51 @@ public final class IrExpressions
         return !cast.type().equals(VARCHAR);
     }
 
-    private static boolean mayFail(ResolvedFunction function)
+    private static boolean mayFail(Call call)
     {
-        return !NEVER_FAIL.contains(function.name()) && !isDynamicFilterFunction(function.name());
+        ResolvedFunction function = call.function();
+        if (function.neverFails() || isDynamicFilterFunction(function.name())) {
+            return false;
+        }
+        List<Expression> arguments = call.arguments();
+        if (isModulsOrDivide(function) && arguments.get(1) instanceof Constant divisor && !canCauseDivisionByZeroError(divisor)) {
+            return false;
+        }
+        return true;
+    }
+
+    private static boolean isModulsOrDivide(ResolvedFunction function)
+    {
+        return (function.name().equals(builtinFunctionName(MODULO)) || function.name().equals(builtinFunctionName(DIVIDE))) && function.signature().getArity() == 2;
+    }
+
+    private static boolean canCauseDivisionByZeroError(Constant divisor)
+    {
+        Object value = divisor.value();
+        if (value == null) {
+            return false; // dividing by null is null
+        }
+        return switch (divisor.type()) {
+            case TinyintType _, SmallintType _, IntegerType _, BigintType _ -> (long) value == 0;
+            case DecimalType decimalType -> {
+                if (decimalType.isShort()) {
+                    yield (long) value == 0;
+                }
+                yield ((Int128) value).isZero();
+            }
+            case NumberType _ -> switch (((TrinoNumber) value).toBigDecimal()) {
+                case TrinoNumber.BigDecimalValue(BigDecimal bigdecimal) -> bigdecimal.signum() == 0;
+                case TrinoNumber.Infinity _, TrinoNumber.NotANumber _ -> false;
+            };
+            case RealType _, DoubleType _ -> false; // will return NaN or ±Inf on division by 0
+            default -> true;
+        };
     }
 
     public static Expression not(Metadata metadata, Expression expression)
     {
-        return new Call(
+        return call(
                 metadata.resolveBuiltinFunction("$not", fromTypes(BOOLEAN)),
-                ImmutableList.of(expression));
+                expression);
     }
 }

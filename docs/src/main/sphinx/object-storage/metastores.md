@@ -203,7 +203,7 @@ properties:
   - The term "Hive metastore catalog name" refers to the abstraction concept
     within Hive, enabling various systems to connect to distinct, independent
     catalogs stored in the metastore. By default, the catalog name in Hive
-    metastore is set to "hive." When this configuration property is left empty,
+    metastore is set to "hive". When this configuration property is left empty,
     the default catalog of the Hive metastore will be accessed.
   -
 :::
@@ -492,6 +492,12 @@ following properties:
 * - `iceberg.rest-catalog.session`
   - Session information included when communicating with the REST Catalog.
     Options are `NONE` or `USER` (default: `NONE`).
+* - `iceberg.rest-catalog.connection-timeout`
+  - Maximum time [Duration](prop-type-duration) allowed for socket connection
+    requests to complete before timing out.
+* - `iceberg.rest-catalog.socket-timeout`
+  - Maximum time [Duration](prop-type-duration) allowed socket read/write operations
+    before timing out.
 * - `iceberg.rest-catalog.session-timeout`
   - [Duration](prop-type-duration) to keep authentication session in cache. Defaults to `1h`.
 * - `iceberg.rest-catalog.oauth2.token`
@@ -530,6 +536,9 @@ following properties:
 * - `iceberg.rest-catalog.case-insensitive-name-matching.cache-ttl`
   - [Duration](prop-type-duration) for which case-insensitive namespace, table, 
     and view names are cached. Defaults to `1m`.
+* - `iceberg.rest-catalog.http-headers`
+  - Additional *non-sensitive* HTTP headers to include with requests to the REST catalog.
+    Example: `Header-1: value 1, Header-2: value 2`.
   :::
 
 The following example shows a minimal catalog configuration using an Iceberg
@@ -565,7 +574,7 @@ iceberg.rest-catalog.uri=https://biglake.googleapis.com/iceberg/v1beta/restcatal
 iceberg.rest-catalog.security=GOOGLE
 iceberg.rest-catalog.google-project-id=example-project-id
 iceberg.rest-catalog.view-endpoints-enabled=false
-fs.native-gcs.enable=true
+fs.gcs.enabled=true
 gcs.json-key-file-path=/path/to/gcs_keyfile.json
 ```
 

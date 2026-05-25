@@ -67,8 +67,9 @@ The connector supports accessing the following file systems:
 * [](/object-storage/file-system-s3)
 * [](/object-storage/file-system-hdfs)
 
-You must enable and configure the specific file system access. [Legacy
-support](file-system-legacy) is not recommended and will be removed.
+Enable and configure the file system that your catalog uses. Use
+`fs.hadoop.enabled` only for HDFS; see [legacy file system
+support](file-system-legacy) for migration details.
 
 ### Delta Lake general configuration properties
 
@@ -172,7 +173,7 @@ values. Typical usage does not require you to configure them.
     contain external files.
   - `false`
 * - `delta.parquet.time-zone`
-  - Time zone for Parquet read and write.
+  - Time zone used when reading timestamps from Parquet files.
   - JVM default
 * - `delta.target-max-file-size`
   - Target maximum size of written files; the actual size could be larger. The
@@ -200,6 +201,13 @@ values. Typical usage does not require you to configure them.
   - Number of threads used for retrieving checkpoint files of each table. Currently, only 
     retrievals of V2 Checkpoint's sidecar files are parallelized.
   - `4`
+* - `delta.load-metadata-from-checksum-file`
+  - Speed up query planning by reading table metadata and protocol
+    entries from the Delta version checksum file (`<version>.crc`) when
+    available. Falls back to scanning the transaction log if the checksum
+    file is missing, incomplete, or malformed. The equivalent catalog
+    session property is `load_metadata_from_checksum_file`.
+  - `true`
 :::
 
 ### Catalog session properties
@@ -232,6 +240,12 @@ The following table describes {ref}`catalog session properties
 * - `projection_pushdown_enabled`
   - Read only projected fields from row columns while performing `SELECT`
     queries.
+  - `true`
+* - `load_metadata_from_checksum_file`
+  - Speed up query planning by reading table metadata and protocol
+    entries from the Delta version checksum file (`<version>.crc`) when
+    available. Falls back to scanning the transaction log if the checksum
+    file is missing, incomplete, or malformed.
   - `true`
 :::
 

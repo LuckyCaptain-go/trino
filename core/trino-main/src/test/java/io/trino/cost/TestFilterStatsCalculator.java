@@ -195,7 +195,8 @@ public class TestFilterStatsCalculator
         for (Expression minusThree : ImmutableList.of(
                 new Constant(createDecimalType(3), Decimals.valueOfShort(new BigDecimal("-3"))),
                 new Constant(DOUBLE, -3.0),
-                new Call(SUBTRACT_DOUBLE, ImmutableList.of(new Constant(DOUBLE, 4.0), new Constant(DOUBLE, 7.0))), new Cast(new Constant(INTEGER, -3L), createDecimalType(7, 3)))) {
+                new Call(SUBTRACT_DOUBLE, ImmutableList.of(new Constant(DOUBLE, 4.0), new Constant(DOUBLE, 7.0))),
+                new Cast(new Constant(INTEGER, -3L), createDecimalType(7, 3)))) {
             assertExpression(new Comparison(EQUAL, new Reference(DOUBLE, "x"), new Cast(minusThree, DOUBLE)))
                     .outputRowsCount(18.75)
                     .symbolStats(new Symbol(DOUBLE, "x"), symbolAssert ->
@@ -266,7 +267,7 @@ public class TestFilterStatsCalculator
         double nullsFractionY = 0.5;
         double inputRowCount = standardInputStatistics.getOutputRowCount();
         double nonNullRowCount = inputRowCount * (1 - nullsFractionY);
-        SymbolStatsEstimate nonNullStatsX = xStats.mapNullsFraction(nullsFraction -> 0.0);
+        SymbolStatsEstimate nonNullStatsX = xStats.mapNullsFraction(_ -> 0.0);
         assertExpression(new Comparison(GREATER_THAN, new Reference(DOUBLE, "x"), new Call(SUBTRACT_DOUBLE, ImmutableList.of(new Reference(DOUBLE, "y"), new Constant(DOUBLE, 25.0)))))
                 .outputRowsCount(nonNullRowCount)
                 .symbolStats("x", symbolAssert -> symbolAssert.isEqualTo(nonNullStatsX));
@@ -717,7 +718,7 @@ public class TestFilterStatsCalculator
     {
         assertExpression(new Comparison(EQUAL, new Reference(DOUBLE, "x"), new Reference(DOUBLE, "x")))
                 .outputRowsCount(750)
-                .symbolStats("x", DOUBLE, symbolStats ->
+                .symbolStats("x", DOUBLE, _ ->
                         SymbolStatsEstimate.builder()
                                 .setAverageRowSize(4.0)
                                 .setDistinctValuesCount(40.0)
@@ -862,6 +863,37 @@ public class TestFilterStatsCalculator
                                 .lowValue(1.0)
                                 .highValue(4.0)
                                 .nullsFraction(0.0));
+    }
+
+    @Test
+    public void testNotInOnColumnWithUnknownNdvAndRange()
+    {
+        // Regression: on a varchar column with unknown NDV and unbounded range,
+        // `c NOT IN ('a', 'b')` used to collapse to 0 rows. Each per-value equality
+        // returned a 0.5 heuristic selectivity, the IN sum saturated at the full
+        // non-null row count, and $not(IN) subtracted to 0.
+
+        VarcharType type = createVarcharType(16);
+        Symbol column = new Symbol(type, "c");
+        Reference ref = new Reference(type, "c");
+
+        SymbolStatsEstimate columnStats = SymbolStatsEstimate.builder()
+                .setAverageRowSize(NaN)
+                .setDistinctValuesCount(NaN)
+                .setLowValue(NEGATIVE_INFINITY)
+                .setHighValue(POSITIVE_INFINITY)
+                .setNullsFraction(0)
+                .build();
+        PlanNodeStatsEstimate input = PlanNodeStatsEstimate.builder()
+                .addSymbolStatistics(column, columnStats)
+                .setOutputRowCount(1000)
+                .build();
+
+        Constant a = new Constant(type, Slices.utf8Slice("a"));
+        Constant b = new Constant(type, Slices.utf8Slice("b"));
+
+        // NOT IN on an unknown column yields an unknown estimate rather than a fabricated row count.
+        assertExpression(not(new In(ref, ImmutableList.of(a, b))), input).outputRowsCountUnknown();
     }
 
     private PlanNodeStatsAssertion assertExpression(Expression expression)

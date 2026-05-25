@@ -106,6 +106,7 @@ import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.SQLSyntaxErrorException;
+import java.sql.Statement;
 import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.Instant;
@@ -117,6 +118,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.BiFunction;
@@ -140,7 +142,6 @@ import static io.airlift.slice.Slices.utf8Slice;
 import static io.trino.plugin.base.util.JsonTypeUtil.jsonParse;
 import static io.trino.plugin.jdbc.CaseSensitivity.CASE_INSENSITIVE;
 import static io.trino.plugin.jdbc.CaseSensitivity.CASE_SENSITIVE;
-import static io.trino.plugin.jdbc.DecimalConfig.DecimalMapping.ALLOW_OVERFLOW;
 import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalDefaultScale;
 import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRounding;
 import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRoundingMode;
@@ -166,6 +167,7 @@ import static io.trino.plugin.jdbc.StandardColumnMappings.integerColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.integerWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.longDecimalWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.longTimestampWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.numberColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.realWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.shortDecimalWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.smallintColumnMapping;
@@ -518,7 +520,7 @@ public class MySqlClient
     @Override
     protected String getColumnDefinitionSql(ConnectorSession session, ColumnMetadata column, String columnName)
     {
-        if (column.getComment() != null) {
+        if (column.getComment().isPresent()) {
             throw new TrinoException(NOT_SUPPORTED, "This connector does not support creating tables with column comment");
         }
 
@@ -545,98 +547,92 @@ public class MySqlClient
             return mapping;
         }
 
-        switch (jdbcTypeName.toLowerCase(ENGLISH)) {
-            case "tinyint unsigned":
-                return Optional.of(smallintColumnMapping());
-            case "smallint unsigned":
-                return Optional.of(integerColumnMapping());
-            case "int unsigned":
-                return Optional.of(bigintColumnMapping());
-            case "bigint unsigned":
-                return Optional.of(decimalColumnMapping(createDecimalType(20)));
-            case "json":
-                return Optional.of(jsonColumnMapping());
-            case "enum":
-                return Optional.of(defaultVarcharColumnMapping(typeHandle.requiredColumnSize(), false));
-            case "datetime":
-                return mysqlDateTimeToTrinoTimestamp(typeHandle);
+        Optional<ColumnMapping> jdbcTypeNameMapping = switch (jdbcTypeName.toLowerCase(ENGLISH)) {
+            case "tinyint unsigned" -> Optional.of(smallintColumnMapping());
+            case "smallint unsigned" -> Optional.of(integerColumnMapping());
+            case "int unsigned" -> Optional.of(bigintColumnMapping());
+            case "bigint unsigned" -> Optional.of(decimalColumnMapping(createDecimalType(20)));
+            case "json" -> Optional.of(jsonColumnMapping());
+            case "enum" -> Optional.of(defaultVarcharColumnMapping(typeHandle.requiredColumnSize(), false));
+            case "datetime" -> mysqlDateTimeToTrinoTimestamp(typeHandle);
+            default -> Optional.empty();
+        };
+        if (jdbcTypeNameMapping.isPresent()) {
+            return jdbcTypeNameMapping;
         }
 
-        switch (typeHandle.jdbcType()) {
-            case Types.BIT:
-                return Optional.of(booleanColumnMapping());
+        Optional<ColumnMapping> jdbcTypeMapping = switch (typeHandle.jdbcType()) {
+            case Types.BIT -> {
+                if (typeHandle.requiredColumnSize() == 1) {
+                    yield Optional.of(booleanColumnMapping());
+                }
+                yield Optional.empty();
+            }
 
-            case Types.TINYINT:
-                return Optional.of(tinyintColumnMapping());
+            case Types.TINYINT -> Optional.of(tinyintColumnMapping());
 
-            case Types.SMALLINT:
-                return Optional.of(smallintColumnMapping());
+            case Types.SMALLINT -> Optional.of(smallintColumnMapping());
 
-            case Types.INTEGER:
-                return Optional.of(integerColumnMapping());
+            case Types.INTEGER -> Optional.of(integerColumnMapping());
 
-            case Types.BIGINT:
-                return Optional.of(bigintColumnMapping());
+            case Types.BIGINT -> Optional.of(bigintColumnMapping());
 
-            case Types.REAL:
-                // Disable pushdown because floating-point values are approximate and not stored as exact values,
-                // attempts to treat them as exact in comparisons may lead to problems
-                return Optional.of(ColumnMapping.longMapping(
-                        REAL,
-                        (resultSet, columnIndex) -> floatToRawIntBits(resultSet.getFloat(columnIndex)),
-                        realWriteFunction(),
-                        DISABLE_PUSHDOWN));
+            // Disable pushdown because floating-point values are approximate and not stored as exact values,
+            // attempts to treat them as exact in comparisons may lead to problems
+            case Types.REAL -> Optional.of(ColumnMapping.longMapping(
+                    REAL,
+                    (resultSet, columnIndex) -> floatToRawIntBits(resultSet.getFloat(columnIndex)),
+                    realWriteFunction(),
+                    DISABLE_PUSHDOWN));
 
-            case Types.DOUBLE:
-                return Optional.of(doubleColumnMapping());
+            case Types.DOUBLE -> Optional.of(doubleColumnMapping());
 
-            case Types.NUMERIC:
-            case Types.DECIMAL:
+            case Types.NUMERIC, Types.DECIMAL -> {
                 int decimalDigits = typeHandle.decimalDigits().orElseThrow(() -> new IllegalStateException("decimal digits not present"));
                 int precision = typeHandle.requiredColumnSize();
-                if (getDecimalRounding(session) == ALLOW_OVERFLOW && precision > Decimals.MAX_PRECISION) {
-                    int scale = min(decimalDigits, getDecimalDefaultScale(session));
-                    return Optional.of(decimalColumnMapping(createDecimalType(Decimals.MAX_PRECISION, scale), getDecimalRoundingMode(session)));
-                }
                 // TODO does mysql support negative scale?
                 precision = precision + max(-decimalDigits, 0); // Map decimal(p, -s) (negative scale) to decimal(p+s, 0).
-                if (precision > Decimals.MAX_PRECISION) {
-                    break;
+                if (precision <= Decimals.MAX_PRECISION) {
+                    yield Optional.of(decimalColumnMapping(createDecimalType(precision, max(decimalDigits, 0))));
                 }
-                return Optional.of(decimalColumnMapping(createDecimalType(precision, max(decimalDigits, 0))));
+                // precision > MAX_PRECISION
+                yield switch (getDecimalRounding(session)) {
+                    case MAP_TO_NUMBER -> Optional.of(numberColumnMapping());
+                    case STRICT -> Optional.empty();
+                    case ALLOW_OVERFLOW -> {
+                        int scale = min(max(decimalDigits, 0), getDecimalDefaultScale(session));
+                        yield Optional.of(decimalColumnMapping(createDecimalType(Decimals.MAX_PRECISION, scale), getDecimalRoundingMode(session)));
+                    }
+                };
+            }
 
-            case Types.CHAR:
-                return Optional.of(mySqlDefaultCharColumnMapping(typeHandle.requiredColumnSize(), typeHandle.caseSensitivity()));
+            case Types.CHAR -> Optional.of(mySqlDefaultCharColumnMapping(typeHandle.requiredColumnSize(), typeHandle.caseSensitivity()));
 
             // TODO not all these type constants are necessarily used by the JDBC driver
-            case Types.VARCHAR:
-            case Types.NVARCHAR:
-            case Types.LONGVARCHAR:
-            case Types.LONGNVARCHAR:
-                return Optional.of(mySqlDefaultVarcharColumnMapping(typeHandle.requiredColumnSize(), typeHandle.caseSensitivity()));
+            case Types.VARCHAR, Types.NVARCHAR, Types.LONGVARCHAR, Types.LONGNVARCHAR -> Optional.of(mySqlDefaultVarcharColumnMapping(typeHandle.requiredColumnSize(), typeHandle.caseSensitivity()));
 
-            case Types.BINARY:
-            case Types.VARBINARY:
-            case Types.LONGVARBINARY:
-                return Optional.of(ColumnMapping.sliceMapping(VARBINARY, varbinaryReadFunction(), varbinaryWriteFunction(), FULL_PUSHDOWN));
+            case Types.BINARY, Types.VARBINARY, Types.LONGVARBINARY -> Optional.of(ColumnMapping.sliceMapping(VARBINARY, varbinaryReadFunction(), varbinaryWriteFunction(), FULL_PUSHDOWN));
 
-            case Types.DATE:
-                return Optional.of(ColumnMapping.longMapping(
-                        DATE,
-                        dateReadFunctionUsingLocalDate(),
-                        mySqlDateWriteFunctionUsingLocalDate()));
+            case Types.DATE -> Optional.of(ColumnMapping.longMapping(
+                    DATE,
+                    dateReadFunctionUsingLocalDate(),
+                    mySqlDateWriteFunctionUsingLocalDate()));
 
-            case Types.TIME:
+            case Types.TIME -> {
                 TimeType timeType = createTimeType(getTimePrecision(typeHandle.requiredColumnSize()));
                 requireNonNull(timeType, "timeType is null");
                 checkArgument(timeType.getPrecision() <= 9, "Unsupported type precision: %s", timeType);
-                return Optional.of(ColumnMapping.longMapping(
+                yield Optional.of(ColumnMapping.longMapping(
                         timeType,
                         mySqlTimeReadFunction(timeType),
                         timeWriteFunction(timeType.getPrecision())));
+            }
 
-            case Types.TIMESTAMP:
-                return mysqlTimestampToTrinoTimestampWithTz(typeHandle);
+            case Types.TIMESTAMP -> mysqlTimestampToTrinoTimestampWithTz(typeHandle);
+            default -> Optional.empty();
+        };
+        if (jdbcTypeMapping.isPresent()) {
+            return jdbcTypeMapping;
         }
 
         if (getUnsupportedTypeHandling(session) == CONVERT_TO_VARCHAR) {
@@ -960,7 +956,7 @@ public class MySqlClient
 
     private void addColumn(ConnectorSession session, RemoteTableName table, ColumnMetadata column, String position)
     {
-        if (column.getComment() != null) {
+        if (column.getComment().isPresent()) {
             throw new TrinoException(NOT_SUPPORTED, "This connector does not support adding columns with comments");
         }
 
@@ -1361,7 +1357,7 @@ public class MySqlClient
 
     private static boolean isGtidMode(Connection connection)
     {
-        try (java.sql.Statement statement = connection.createStatement();
+        try (Statement statement = connection.createStatement();
                 ResultSet resultSet = statement.executeQuery("SHOW VARIABLES LIKE 'gtid_mode'")) {
             if (resultSet.next()) {
                 return !resultSet.getString("Value").equalsIgnoreCase("OFF");
@@ -1423,7 +1419,7 @@ public class MySqlClient
                             """)
                     .bind("schema", remoteTableName.getCatalogName().orElse(null))
                     .bind("table_name", remoteTableName.getTableName())
-                    .map((rs, ctx) -> {
+                    .map((rs, _) -> {
                         String columnName = rs.getString("COLUMN_NAME");
 
                         boolean nullable = rs.getString("NULLABLE").equalsIgnoreCase("YES");
@@ -1458,7 +1454,7 @@ public class MySqlClient
                             """)
                     .bind("schema", remoteTableName.getCatalogName().orElse(null))
                     .bind("table_name", remoteTableName.getTableName())
-                    .map((rs, ctx) -> new SimpleEntry<>(rs.getString("COLUMN_NAME"), rs.getString("HISTOGRAM")))
+                    .map((rs, _) -> new SimpleEntry<>(rs.getString("COLUMN_NAME"), rs.getString("HISTOGRAM")))
                     .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
         }
     }
@@ -1468,13 +1464,13 @@ public class MySqlClient
     // See https://dev.mysql.com/doc/refman/8.0/en/optimizer-statistics.html
     public static class ColumnHistogram
     {
-        private final Optional<Double> nullFraction;
+        private final OptionalDouble nullFraction;
         private final Optional<String> histogramType;
         private final Optional<List<List<Object>>> buckets;
 
         @JsonCreator
         public ColumnHistogram(
-                @JsonProperty("null-values") Optional<Double> nullFraction,
+                @JsonProperty("null-values") OptionalDouble nullFraction,
                 @JsonProperty("histogram-type") Optional<String> histogramType,
                 @JsonProperty("buckets") Optional<List<List<Object>>> buckets)
         {
@@ -1485,7 +1481,7 @@ public class MySqlClient
 
         public void updateColumnStatistics(ColumnStatistics.Builder columnStatistics)
         {
-            nullFraction.map(Estimate::of).ifPresent(columnStatistics::setNullsFraction);
+            nullFraction.ifPresent(value -> columnStatistics.setNullsFraction(Estimate.of(value)));
             getDistinctValuesCount().map(Estimate::of).ifPresent(columnStatistics::setDistinctValuesCount);
         }
 

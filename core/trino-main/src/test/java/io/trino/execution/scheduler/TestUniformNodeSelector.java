@@ -36,6 +36,7 @@ import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.testing.TestingSession;
 import io.trino.testing.TestingSplit;
 import io.trino.util.FinalizerService;
+import org.assertj.guava.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -98,7 +99,7 @@ public class TestUniformNodeSelector
                 .setIncludeCoordinator(false);
 
         // contents of taskMap indicate the node-task map for the current stage
-        nodeScheduler = new NodeScheduler(new UniformNodeSelectorFactory(CURRENT_NODE, nodeManager, nodeSchedulerConfig, nodeTaskMap));
+        nodeScheduler = new NodeScheduler(new UniformNodeSelectorFactory(CURRENT_NODE, nodeManager, nodeSchedulerConfig, nodeTaskMap, new ConsistentHashingAddressProvider(nodeManager, new ConsistentHashingAddressProviderConfig())));
         taskMap = new HashMap<>();
         nodeSelector = nodeScheduler.createNodeSelector(session);
         remoteTaskExecutor = newCachedThreadPool(daemonThreadsNamed("remoteTaskExecutor-%s"));
@@ -138,7 +139,8 @@ public class TestUniformNodeSelector
                 500,
                 NodeSchedulerConfig.SplitsBalancingPolicy.STAGE,
                 false,
-                queueSizeAdjuster);
+                queueSizeAdjuster,
+                new ConsistentHashingAddressProvider(nodeManager, new ConsistentHashingAddressProviderConfig()));
 
         for (int i = 0; i < 20; i++) {
             splits.add(new Split(TEST_CATALOG_HANDLE, TestingSplit.createRemoteSplit()));
@@ -310,7 +312,8 @@ public class TestUniformNodeSelector
                 2000,
                 NodeSchedulerConfig.SplitsBalancingPolicy.STAGE,
                 true,
-                new UniformNodeSelector.QueueSizeAdjuster(1000, 10000, new TestingTicker()));
+                new UniformNodeSelector.QueueSizeAdjuster(1000, 10000, new TestingTicker()),
+                new ConsistentHashingAddressProvider(nodeManager, new ConsistentHashingAddressProviderConfig()));
 
         Split rigidSplit = new Split(TEST_CATALOG_HANDLE, new TestingSplit(false, ImmutableList.of(node1.getHostAndPort())));
         splits.add(rigidSplit);
@@ -321,7 +324,7 @@ public class TestUniformNodeSelector
         Multimap<InternalNode, Split> assignmentsNode1Alive = nodeSelector.computeAssignments(splits, ImmutableList.copyOf(taskMap.values())).getAssignments();
         ArrayListMultimap<InternalNode, Split> expected = ArrayListMultimap.create();
         expected.putAll(node1, splits);
-        org.assertj.guava.api.Assertions.assertThat(assignmentsNode1Alive).hasSameEntriesAs(expected);
+        Assertions.assertThat(assignmentsNode1Alive).hasSameEntriesAs(expected);
 
         nodeManager.removeNode(node1);
         // Now the flexible split can fail over to node2, while the rigid split cannot.
@@ -330,7 +333,7 @@ public class TestUniformNodeSelector
                 nodeSelector.computeAssignments(ImmutableSet.of(flexibleSplit), ImmutableList.copyOf(taskMap.values())).getAssignments();
         expected = ArrayListMultimap.create();
         expected.put(node2, flexibleSplit);
-        org.assertj.guava.api.Assertions.assertThat(assignmentsNode1Dead).hasSameEntriesAs(expected);
+        Assertions.assertThat(assignmentsNode1Dead).hasSameEntriesAs(expected);
     }
 
     private NodeMap createNodeMap()

@@ -204,6 +204,7 @@ statement
     | EXECUTE IMMEDIATE string (USING expression (',' expression)*)?   #executeImmediate
     | DESCRIBE INPUT identifier                                        #describeInput
     | DESCRIBE OUTPUT identifier                                       #describeOutput
+    | DESCRIBE OUTPUT '(' rootQuery ')'                                #describeQueryOutput
     | SET PATH pathSpecification                                       #setPath
     | SET TIME ZONE (LOCAL | expression)                               #setTimeZone
     | UPDATE qualifiedName ('@' branch=identifier)?
@@ -481,6 +482,10 @@ relationPrimary
         )?
         ((ERROR | EMPTY) ON ERROR)?
       ')'                                                             #jsonTable
+    | NEAREST '('
+        FROM relation
+        (WHERE where=booleanExpression)?
+        MATCH match=booleanExpression ')'                             #nearest
     ;
 
 jsonTableColumn
@@ -600,6 +605,8 @@ primaryExpression
         filter? over?                                                                     #functionCall
     | processingMode? qualifiedName '(' (setQuantifier? expression (',' expression)*)?
         orderBy? ')' filter? (nullTreatment? over)?                                       #functionCall
+    | qualifiedName '::' identifier '(' (expression (',' expression)*)? ')'               #staticMethodCall
+    | primaryExpression '.' identifier '(' (expression (',' expression)*)? ')'            #methodCall
     | identifier over                                                                     #measure
     | identifier '->' expression                                                          #lambda
     | '(' (identifier (',' identifier)*)? ')' '->' expression                             #lambda
@@ -760,11 +767,7 @@ booleanValue
     ;
 
 interval
-    : INTERVAL sign=(PLUS | MINUS)? string from=intervalField (TO to=intervalField)?
-    ;
-
-intervalField
-    : YEAR | MONTH | DAY | HOUR | MINUTE | SECOND
+    : INTERVAL sign=(PLUS | MINUS)? string intervalQualifier
     ;
 
 normalForm
@@ -773,7 +776,7 @@ normalForm
 
 type
     : ROW '(' rowField (',' rowField)* ')'                                         #rowType
-    | INTERVAL from=intervalField (TO to=intervalField)?                           #intervalType
+    | INTERVAL intervalQualifier                                                   #intervalType
     | base=TIMESTAMP ('(' precision = typeParameter ')')? (WITHOUT TIME ZONE)?     #dateTimeType
     | base=TIMESTAMP ('(' precision = typeParameter ')')? WITH TIME ZONE           #dateTimeType
     | base=TIME ('(' precision = typeParameter ')')? (WITHOUT TIME ZONE)?          #dateTimeType
@@ -784,6 +787,18 @@ type
     | type ARRAY ('[' INTEGER_VALUE ']')?                                          #arrayType
     | identifier ('(' typeParameter (',' typeParameter)* ')')?                     #genericType
     ;
+
+intervalQualifier
+  : YEAR ('(' precision=INTEGER_VALUE ')')? TO MONTH                                              #compositeYearToMonthInterval
+  | field=(YEAR | MONTH) ('(' precision=INTEGER_VALUE ')')?                                       #simpleYearMonthInterval
+  | start=(DAY | HOUR | MINUTE) ('(' leadingPrecision=INTEGER_VALUE ')')?
+    TO (
+      end=HOUR |
+      end=MINUTE |
+      end=SECOND ('(' fractionalPrecision=INTEGER_VALUE ')')?)                                    #compositeDayTimeInterval
+  | field=(DAY | HOUR | MINUTE) ('(' precision=INTEGER_VALUE ')')?                                #simpleDayTimeInterval
+  | SECOND ('(' leadingPrecision=INTEGER_VALUE (',' fractionalPrecision=INTEGER_VALUE)? ')')?     #secondsDayTimeInterval
+  ;
 
 rowField
     : type
@@ -1044,7 +1059,7 @@ nonReserved
     | KEEP | KEY | KEYS
     | LANGUAGE | LAST | LATERAL | LEADING | LEAVE | LEVEL | LIMIT | LOCAL | LOGICAL | LOOP
     | MAP | MATCH | MATCHED | MATCHES | MATCH_RECOGNIZE | MATERIALIZED | MEASURES | MERGE | MINUTE | MONTH
-    | NESTED | NEXT | NFC | NFD | NFKC | NFKD | NO | NONE | NULLIF | NULLS
+    | NEAREST | NESTED | NEXT | NFC | NFD | NFKC | NFKD | NO | NONE | NULLIF | NULLS
     | OBJECT | OF | OFFSET | OMIT | ONE | ONLY | OPTION | ORDINALITY | OUTPUT | OVER | OVERFLOW
     | PARTITION | PARTITIONS | PASSING | PAST | PATH | PATTERN | PER | PERIOD | PERMUTE | PLAN | POSITION | PRECEDING | PRECISION | PRIVILEGES | PROPERTIES | PRUNE
     | QUOTES
@@ -1222,6 +1237,7 @@ MERGE: 'MERGE';
 MINUTE: 'MINUTE';
 MONTH: 'MONTH';
 NATURAL: 'NATURAL';
+NEAREST: 'NEAREST';
 NESTED: 'NESTED';
 NEXT: 'NEXT';
 NFC : 'NFC';

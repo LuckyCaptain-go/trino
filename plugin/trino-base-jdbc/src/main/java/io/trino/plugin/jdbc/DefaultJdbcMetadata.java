@@ -561,11 +561,12 @@ public class DefaultJdbcMetadata
                 .flatMap(List::stream)
                 .distinct()
                 .peek(handle.getColumns().<Consumer<JdbcColumnHandle>>map(
-                                columns -> groupKey -> verify(columns.contains(groupKey),
+                                columns -> groupKey -> verify(
+                                        columns.contains(groupKey),
                                         "applyAggregation called with a grouping column %s which was not included in the table columns: %s",
                                         groupKey,
                                         tableColumns))
-                        .orElse(groupKey -> {}))
+                        .orElse(_ -> {}))
                 .forEach(newColumns::add);
 
         for (AggregateFunction aggregate : aggregates) {
@@ -1200,7 +1201,7 @@ public class DefaultJdbcMetadata
             throw new TrinoException(NOT_SUPPORTED, "This connector does not support replacing tables");
         }
         JdbcOutputTableHandle handle = jdbcClient.beginCreateTable(session, tableMetadata, rollbackActions::add);
-        rollbackActions.add(() -> jdbcClient.rollbackCreateTable(session, handle));
+        rollbackActions.add(() -> jdbcClient.rollbackTemporaryTableCreation(session, handle));
         return handle;
     }
 
@@ -1290,7 +1291,7 @@ public class DefaultJdbcMetadata
                 .map(JdbcColumnHandle.class::cast)
                 .collect(toImmutableList());
         JdbcOutputTableHandle handle = jdbcClient.beginInsertTable(session, (JdbcTableHandle) tableHandle, columnHandles);
-        rollbackActions.add(() -> jdbcClient.rollbackCreateTable(session, handle));
+        rollbackActions.add(() -> jdbcClient.rollbackTemporaryTableCreation(session, handle));
         return handle;
     }
 

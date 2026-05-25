@@ -60,6 +60,7 @@ import io.trino.sql.analyzer.JsonPathAnalyzer.JsonPathAnalysis;
 import io.trino.sql.analyzer.PatternRecognitionAnalysis.PatternInputAnalysis;
 import io.trino.sql.planner.PartitioningHandle;
 import io.trino.sql.tree.AllColumns;
+import io.trino.sql.tree.ComparisonExpression;
 import io.trino.sql.tree.DataType;
 import io.trino.sql.tree.ExistsPredicate;
 import io.trino.sql.tree.Expression;
@@ -73,6 +74,7 @@ import io.trino.sql.tree.JsonTable;
 import io.trino.sql.tree.JsonTableColumnDefinition;
 import io.trino.sql.tree.LambdaArgumentDeclaration;
 import io.trino.sql.tree.MeasureDefinition;
+import io.trino.sql.tree.Nearest;
 import io.trino.sql.tree.Node;
 import io.trino.sql.tree.NodeRef;
 import io.trino.sql.tree.Offset;
@@ -157,8 +159,8 @@ public class Analysis
     private final Map<NodeRef<Node>, Scope> scopes = new LinkedHashMap<>();
     private final Map<NodeRef<Expression>, ResolvedField> columnReferences = new LinkedHashMap<>();
 
-    // a map of users to the columns per table that they access
-    private final Map<AccessControlInfo, Map<QualifiedObjectName, Set<String>>> tableColumnReferences = new LinkedHashMap<>();
+    // a map of users to the columns per table (and branch) that they access
+    private final Map<AccessControlInfo, Map<TableAndBranch, Set<String>>> tableColumnReferences = new LinkedHashMap<>();
 
     // Record fields prefixed with labels in row pattern recognition context
     private final Map<NodeRef<Expression>, Optional<String>> labels = new LinkedHashMap<>();
@@ -223,6 +225,7 @@ public class Analysis
     private final Map<NodeRef<Expression>, ResolvedFunction> frameBoundCalculations = new LinkedHashMap<>();
     private final Map<NodeRef<Relation>, List<Type>> relationCoercions = new LinkedHashMap<>();
     private final Map<NodeRef<Node>, RoutineEntry> resolvedFunctions = new LinkedHashMap<>();
+    private final Map<NodeRef<FunctionCall>, Identifier> methodCallReceivers = new LinkedHashMap<>();
     private final Map<NodeRef<Identifier>, LambdaArgumentDeclaration> lambdaArgumentReferences = new LinkedHashMap<>();
 
     private final Map<Field, ColumnHandle> columns = new LinkedHashMap<>();
@@ -242,6 +245,7 @@ public class Analysis
     private final Map<NodeRef<Table>, Map<ColumnHandle, Expression>> defaultColumnValues = new LinkedHashMap<>();
 
     private final Map<NodeRef<Unnest>, UnnestAnalysis> unnestAnalysis = new LinkedHashMap<>();
+    private final Map<NodeRef<Nearest>, NearestAnalysis> nearestAnalysis = new LinkedHashMap<>();
     private Optional<Create> create = Optional.empty();
     private Optional<Insert> insert = Optional.empty();
     private Optional<RefreshMaterializedViewAnalysis> refreshMaterializedView = Optional.empty();
@@ -296,9 +300,9 @@ public class Analysis
                 .map(field -> new ColumnLineageInfo(
                         field.getName().orElse(""),
                         getSourceColumns(field)
-                            .stream()
-                            .map(SourceColumn::getColumnDetail)
-                            .collect(toImmutableSet())))
+                                .stream()
+                                .map(SourceColumn::getColumnDetail)
+                                .collect(toImmutableSet())))
                 .collect(toImmutableList());
         return lineageInfo.isEmpty() ? Optional.empty() : Optional.of(lineageInfo);
     }
@@ -534,7 +538,7 @@ public class Analysis
 
     public void recordSubqueries(Node node, ExpressionAnalysis expressionAnalysis)
     {
-        SubqueryAnalysis subqueries = this.subqueries.computeIfAbsent(NodeRef.of(node), key -> new SubqueryAnalysis());
+        SubqueryAnalysis subqueries = this.subqueries.computeIfAbsent(NodeRef.of(node), _ -> new SubqueryAnalysis());
         subqueries.addInPredicates(dereference(expressionAnalysis.getSubqueryInPredicates()));
         subqueries.addSubqueries(dereference(expressionAnalysis.getSubqueries()));
         subqueries.addExistsSubqueries(dereference(expressionAnalysis.getExistsSubqueries()));
@@ -550,12 +554,12 @@ public class Analysis
 
     public SubqueryAnalysis getSubqueries(Node node)
     {
-        return subqueries.computeIfAbsent(NodeRef.of(node), key -> new SubqueryAnalysis());
+        return subqueries.computeIfAbsent(NodeRef.of(node), _ -> new SubqueryAnalysis());
     }
 
     public void addWindowDefinition(QuerySpecification query, CanonicalizationAware<Identifier> name, ResolvedWindow window)
     {
-        windowDefinitions.computeIfAbsent(NodeRef.of(query), key -> new LinkedHashMap<>())
+        windowDefinitions.computeIfAbsent(NodeRef.of(query), _ -> new LinkedHashMap<>())
                 .put(name, window);
     }
 
@@ -679,6 +683,7 @@ public class Analysis
             Table table,
             Optional<TableHandle> handle,
             QualifiedObjectName name,
+            Optional<String> branch,
             String authorization,
             Scope accessControlScope,
             Optional<String> viewText)
@@ -688,6 +693,7 @@ public class Analysis
                 new TableEntry(
                         handle,
                         name,
+                        branch,
                         authorization,
                         accessControlScope,
                         tablesForView.isEmpty() &&
@@ -713,6 +719,16 @@ public class Analysis
     public void addResolvedFunction(Node node, ResolvedFunction function, String authorization)
     {
         resolvedFunctions.put(NodeRef.of(node), new RoutineEntry(function, authorization));
+    }
+
+    public void addMethodCallReceiver(FunctionCall node, Identifier receiver)
+    {
+        methodCallReceivers.put(NodeRef.of(node), receiver);
+    }
+
+    public Optional<Identifier> getMethodCallReceiver(FunctionCall node)
+    {
+        return Optional.ofNullable(methodCallReceivers.get(NodeRef.of(node)));
     }
 
     public Set<NodeRef<Expression>> getColumnReferences()
@@ -1001,18 +1017,28 @@ public class Analysis
         return unnestAnalysis.get(NodeRef.of(node));
     }
 
-    public void addTableColumnReferences(AccessControl accessControl, Identity identity, Multimap<QualifiedObjectName, String> tableColumnMap)
+    public void setNearest(Nearest node, NearestAnalysis analysis)
     {
-        AccessControlInfo accessControlInfo = new AccessControlInfo(accessControl, identity);
-        Map<QualifiedObjectName, Set<String>> references = tableColumnReferences.computeIfAbsent(accessControlInfo, k -> new LinkedHashMap<>());
-        tableColumnMap.asMap()
-                .forEach((key, value) -> references.computeIfAbsent(key, k -> new HashSet<>()).addAll(value));
+        nearestAnalysis.put(NodeRef.of(node), analysis);
     }
 
-    public void addEmptyColumnReferencesForTable(AccessControl accessControl, Identity identity, QualifiedObjectName table)
+    public NearestAnalysis getNearest(Nearest node)
+    {
+        return nearestAnalysis.get(NodeRef.of(node));
+    }
+
+    public void addTableColumnReferences(AccessControl accessControl, Identity identity, Multimap<TableAndBranch, String> tableColumnMap)
     {
         AccessControlInfo accessControlInfo = new AccessControlInfo(accessControl, identity);
-        tableColumnReferences.computeIfAbsent(accessControlInfo, k -> new LinkedHashMap<>()).computeIfAbsent(table, k -> new HashSet<>());
+        Map<TableAndBranch, Set<String>> references = tableColumnReferences.computeIfAbsent(accessControlInfo, _ -> new LinkedHashMap<>());
+        tableColumnMap.asMap()
+                .forEach((tableAndBranch, columns) -> references.computeIfAbsent(tableAndBranch, _ -> new HashSet<>()).addAll(columns));
+    }
+
+    public void addEmptyColumnReferencesForTable(AccessControl accessControl, Identity identity, QualifiedObjectName table, Optional<String> branch)
+    {
+        AccessControlInfo accessControlInfo = new AccessControlInfo(accessControl, identity);
+        tableColumnReferences.computeIfAbsent(accessControlInfo, _ -> new LinkedHashMap<>()).computeIfAbsent(new TableAndBranch(table, branch), _ -> new HashSet<>());
     }
 
     public void addLabels(Map<NodeRef<Expression>, Optional<String>> labels)
@@ -1132,7 +1158,7 @@ public class Analysis
         return jsonTableAnalyses.get(NodeRef.of(jsonTable));
     }
 
-    public Map<AccessControlInfo, Map<QualifiedObjectName, Set<String>>> getTableColumnReferences()
+    public Map<AccessControlInfo, Map<TableAndBranch, Set<String>>> getTableColumnReferences()
     {
         return tableColumnReferences;
     }
@@ -1166,13 +1192,13 @@ public class Analysis
 
     public void addRowFilter(Table table, Expression filter)
     {
-        rowFilters.computeIfAbsent(NodeRef.of(table), node -> new ArrayList<>())
+        rowFilters.computeIfAbsent(NodeRef.of(table), _ -> new ArrayList<>())
                 .add(filter);
     }
 
     public void addCheckConstraints(Table table, Expression constraint)
     {
-        checkConstraints.computeIfAbsent(NodeRef.of(table), node -> new ArrayList<>())
+        checkConstraints.computeIfAbsent(NodeRef.of(table), _ -> new ArrayList<>())
                 .add(constraint);
     }
 
@@ -1236,9 +1262,9 @@ public class Analysis
                 .map(entry -> {
                     NodeRef<Table> table = entry.getKey();
 
-                    QualifiedObjectName tableName = entry.getValue().getName();
+                    TableAndBranch tableAndBranch = new TableAndBranch(entry.getValue().getName(), entry.getValue().getBranch());
                     List<ColumnInfo> columns = tableColumnReferences.values().stream()
-                            .map(tablesToColumns -> tablesToColumns.get(tableName))
+                            .map(tablesToColumns -> tablesToColumns.get(tableAndBranch))
                             .filter(Objects::nonNull)
                             .flatMap(Collection::stream)
                             .distinct()
@@ -1285,7 +1311,7 @@ public class Analysis
     public List<RoutineInfo> getRoutines()
     {
         return resolvedFunctions.values().stream()
-                .map(value -> new RoutineInfo(value.function.signature().getName().getFunctionName(), value.getAuthorization()))
+                .map(value -> new RoutineInfo(value.function.signature().getName().functionName(), value.getAuthorization()))
                 .collect(toImmutableList());
     }
 
@@ -1715,15 +1741,15 @@ public class Analysis
         public Set<FieldId> getAllFields()
         {
             return Streams.concat(
-                    cubes.stream()
-                            .flatMap(Collection::stream)
-                            .flatMap(Collection::stream),
-                    rollups.stream()
-                            .flatMap(Collection::stream)
-                            .flatMap(Collection::stream),
-                    ordinarySets.stream()
-                            .flatMap(Collection::stream)
-                            .flatMap(Collection::stream))
+                            cubes.stream()
+                                    .flatMap(Collection::stream)
+                                    .flatMap(Collection::stream),
+                            rollups.stream()
+                                    .flatMap(Collection::stream)
+                                    .flatMap(Collection::stream),
+                            ordinarySets.stream()
+                                    .flatMap(Collection::stream)
+                                    .flatMap(Collection::stream))
                     .collect(toImmutableSet());
         }
     }
@@ -2085,6 +2111,8 @@ public class Analysis
         }
     }
 
+    public record TableAndBranch(QualifiedObjectName tableName, Optional<String> branch) {}
+
     private static class RowFilterScopeEntry
     {
         private final QualifiedObjectName table;
@@ -2156,6 +2184,7 @@ public class Analysis
     {
         private final Optional<TableHandle> handle;
         private final QualifiedObjectName name;
+        private final Optional<String> branch;
         private final String authorization;
         private final Scope accessControlScope; // synthetic scope for analysis of row filters and masks
         private final boolean directlyReferenced;
@@ -2165,6 +2194,7 @@ public class Analysis
         public TableEntry(
                 Optional<TableHandle> handle,
                 QualifiedObjectName name,
+                Optional<String> branch,
                 String authorization,
                 Scope accessControlScope,
                 boolean directlyReferenced,
@@ -2173,6 +2203,7 @@ public class Analysis
         {
             this.handle = requireNonNull(handle, "handle is null");
             this.name = requireNonNull(name, "name is null");
+            this.branch = requireNonNull(branch, "branch is null");
             this.authorization = requireNonNull(authorization, "authorization is null");
             this.accessControlScope = requireNonNull(accessControlScope, "accessControlScope is null");
             this.directlyReferenced = directlyReferenced;
@@ -2188,6 +2219,11 @@ public class Analysis
         public QualifiedObjectName getName()
         {
             return name;
+        }
+
+        public Optional<String> getBranch()
+        {
+            return branch;
         }
 
         public String getAuthorization()
@@ -2606,6 +2642,17 @@ public class Analysis
             requireNonNull(transactionHandle, "transactionHandle is null");
             requireNonNull(parametersType, "parametersType is null");
             requireNonNull(orderedOutputColumns, "orderedOutputColumns is null");
+        }
+    }
+
+    public record NearestAnalysis(
+            ComparisonExpression.Operator operator,
+            Expression candidateExpression)
+    {
+        public NearestAnalysis
+        {
+            requireNonNull(operator, "operator is null");
+            requireNonNull(candidateExpression, "candidateExpression is null");
         }
     }
 

@@ -35,6 +35,7 @@ import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -583,28 +584,27 @@ public class InternalResourceGroup
             Queue<InternalResourceGroup> queue;
             UpdateablePriorityQueue<ManagedQueryExecution> queryQueue;
             switch (policy) {
-                case FAIR:
+                case FAIR -> {
                     queue = new FifoQueue<>();
                     queryQueue = new FifoQueue<>();
-                    break;
-                case WEIGHTED:
+                }
+                case WEIGHTED -> {
                     queue = new StochasticPriorityQueue<>();
                     queryQueue = new StochasticPriorityQueue<>();
-                    break;
-                case WEIGHTED_FAIR:
+                }
+                case WEIGHTED_FAIR -> {
                     queue = new WeightedFairQueue<>();
                     queryQueue = new IndexedPriorityQueue<>();
-                    break;
-                case QUERY_PRIORITY:
+                }
+                case QUERY_PRIORITY -> {
                     // Sub groups must use query priority to ensure ordering
                     for (InternalResourceGroup group : subGroups.values()) {
                         group.setSchedulingPolicy(QUERY_PRIORITY);
                     }
                     queue = new IndexedPriorityQueue<>();
                     queryQueue = new IndexedPriorityQueue<>();
-                    break;
-                default:
-                    throw new UnsupportedOperationException("Unsupported scheduling policy: " + policy);
+                }
+                default -> throw new UnsupportedOperationException("Unsupported scheduling policy: " + policy);
             }
             schedulingPolicy = policy;
             while (!eligibleSubGroups.isEmpty()) {
@@ -792,7 +792,7 @@ public class InternalResourceGroup
 
     private void stageResourceUsage()
     {
-        for (Map.Entry<ManagedQueryExecution, StagedResourceUsage> entry : runningQueries.entrySet()) {
+        for (Entry<ManagedQueryExecution, StagedResourceUsage> entry : runningQueries.entrySet()) {
             ManagedQueryExecution query = entry.getKey();
             StagedResourceUsage resourceUsage = entry.getValue();
 
@@ -903,7 +903,7 @@ public class InternalResourceGroup
         synchronized (root) {
             ResourceUsage groupUsageDelta = ZERO;
 
-            for (Map.Entry<ManagedQueryExecution, StagedResourceUsage> entry : runningQueries.entrySet()) {
+            for (Entry<ManagedQueryExecution, StagedResourceUsage> entry : runningQueries.entrySet()) {
                 StagedResourceUsage resourceUsage = entry.getValue();
                 ResourceUsage oldResourceUsage = resourceUsage.current();
                 ResourceUsage newResourceUsage = resourceUsage.staged();

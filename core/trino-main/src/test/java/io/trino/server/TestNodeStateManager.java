@@ -141,7 +141,7 @@ class TestNodeStateManager
         nodeStateManager.transitionState(DRAINING);
         assertThat(nodeStateManager.getServerState()).isEqualTo(DRAINING);
 
-        //advance time to execute drain
+        // advance time to execute drain
         ticker.increment(1, SECONDS);
         executor.run();
         // 2 gracePeriods or more
@@ -301,7 +301,7 @@ class TestNodeStateManager
     {
         ServerConfig serverConfig = new ServerConfig();
         serverConfig.setCoordinator(false);
-        serverConfig.setGracePeriod(new io.airlift.units.Duration(gracePeriodMillis, MILLISECONDS));
+        serverConfig.setGracePeriod(new Duration(gracePeriodMillis, MILLISECONDS));
 
         Supplier<List<TaskInfo>> taskInfoSupplier = () -> tasks.get();
         return new NodeStateManager(
@@ -402,9 +402,7 @@ class TestNodeStateManager
         }
 
         @Override
-        public void shutdown()
-        {
-        }
+        public void shutdown() {}
 
         @Override
         public List<Runnable> shutdownNow()
@@ -478,8 +476,6 @@ class TestNodeStateManager
         }
 
         @Override
-        public void execute(Runnable command)
-        {
-        }
+        public void execute(Runnable command) {}
     }
 }

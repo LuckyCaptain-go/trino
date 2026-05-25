@@ -13,11 +13,17 @@
  */
 package io.trino.testing;
 
+import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.io.Closer;
 import io.airlift.configuration.secrets.SecretsResolver;
+import io.airlift.json.JsonCodec;
+import io.airlift.json.JsonCodecFactory;
+import io.airlift.json.JsonMapperProvider;
+import io.airlift.log.Level;
+import io.airlift.log.Logging;
 import io.airlift.node.NodeInfo;
 import io.airlift.units.Duration;
 import io.opentelemetry.api.trace.Span;
@@ -25,6 +31,7 @@ import io.opentelemetry.api.trace.Tracer;
 import io.trino.FeaturesConfig;
 import io.trino.Session;
 import io.trino.SystemSessionProperties;
+import io.trino.block.BlockJsonSerde;
 import io.trino.connector.CatalogFactory;
 import io.trino.connector.CatalogHandle;
 import io.trino.connector.CatalogServiceProviderModule;
@@ -73,10 +80,13 @@ import io.trino.execution.TableExecuteContextManager;
 import io.trino.execution.TaskManagerConfig;
 import io.trino.execution.querystats.PlanOptimizersStatsCollector;
 import io.trino.execution.resourcegroups.NoOpResourceGroupManager;
+import io.trino.execution.scheduler.ConsistentHashingAddressProvider;
+import io.trino.execution.scheduler.ConsistentHashingAddressProviderConfig;
 import io.trino.execution.scheduler.NodeScheduler;
 import io.trino.execution.scheduler.NodeSchedulerConfig;
 import io.trino.execution.scheduler.UniformNodeSelectorFactory;
 import io.trino.execution.warnings.WarningCollector;
+import io.trino.json.ir.IrJsonPath;
 import io.trino.memory.MemoryManagerConfig;
 import io.trino.memory.NodeMemoryConfig;
 import io.trino.metadata.AnalyzePropertyManager;
@@ -84,7 +94,6 @@ import io.trino.metadata.BlockEncodingManager;
 import io.trino.metadata.CatalogManager;
 import io.trino.metadata.ColumnPropertyManager;
 import io.trino.metadata.DisabledSystemSecurityMetadata;
-import io.trino.metadata.FunctionBundle;
 import io.trino.metadata.FunctionManager;
 import io.trino.metadata.GlobalFunctionCatalog;
 import io.trino.metadata.HandleResolver;
@@ -145,13 +154,16 @@ import io.trino.spi.NodeVersion;
 import io.trino.spi.PageIndexerFactory;
 import io.trino.spi.PageSorter;
 import io.trino.spi.Plugin;
+import io.trino.spi.block.Block;
 import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorFactory;
 import io.trino.spi.connector.ConnectorName;
+import io.trino.spi.function.FunctionBundle;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeOperators;
+import io.trino.spi.type.TypeSignature;
 import io.trino.spiller.GenericSpillerFactory;
 import io.trino.split.PageSinkManager;
 import io.trino.split.PageSourceManager;
@@ -209,6 +221,7 @@ import io.trino.type.BlockTypeOperators;
 import io.trino.type.InternalTypeManager;
 import io.trino.type.JsonPath2016Type;
 import io.trino.type.TypeDeserializer;
+import io.trino.type.TypeSignatureDeserializer;
 import io.trino.util.FinalizerService;
 import org.intellij.lang.annotations.Language;
 
@@ -275,6 +288,11 @@ public class PlanTester
         implements Closeable
 {
     public static final BlockEncodingManager TESTING_BLOCK_ENCODING_MANAGER = new BlockEncodingManager(new BlockEncodingSimdSupport(true));
+
+    static {
+        Logging logging = Logging.initialize();
+        logging.setLevel("org.hibernate.validator.internal.util.Version", Level.WARN);
+    }
 
     private final Session defaultSession;
     private final ExecutorService notificationExecutor;
@@ -388,7 +406,16 @@ public class PlanTester
                 tableFunctionRegistry,
                 typeManager,
                 catalogManager);
-        typeRegistry.addType(new JsonPath2016Type(new TypeDeserializer(typeManager), blockEncodingSerde));
+        JsonMapper mapper = new JsonMapperProvider()
+                .withJsonDeserializers(ImmutableMap.of(
+                        Type.class, new TypeDeserializer(typeManager),
+                        TypeSignature.class, new TypeSignatureDeserializer(),
+                        Block.class, new BlockJsonSerde.Deserializer(blockEncodingSerde)))
+                .withJsonSerializers(ImmutableMap.of(
+                        Block.class, new BlockJsonSerde.Serializer(blockEncodingSerde)))
+                .get();
+        JsonCodec<IrJsonPath> irJsonPathJsonCodec = new JsonCodecFactory(mapper).jsonCodec(IrJsonPath.class);
+        typeRegistry.addType(new JsonPath2016Type(irJsonPathJsonCodec));
         this.joinCompiler = new JoinCompiler(typeOperators);
         this.hashStrategyCompiler = new FlatHashStrategyCompiler(typeOperators, new NullSafeHashCompiler(typeOperators));
         PageIndexerFactory pageIndexerFactory = new GroupByHashPageIndexerFactory(hashStrategyCompiler);
@@ -415,7 +442,8 @@ public class PlanTester
         this.pageSourceManager = new PageSourceManager(createPageSourceProviderFactory(catalogManager));
         this.pageSinkManager = new PageSinkManager(createPageSinkProvider(catalogManager));
         this.indexManager = new IndexManager(createIndexProvider(catalogManager));
-        NodeScheduler nodeScheduler = new NodeScheduler(new UniformNodeSelectorFactory(CURRENT_NODE, nodeManager, nodeSchedulerConfig, new NodeTaskMap(finalizerService)));
+        ConsistentHashingAddressProvider consistentHashingAddressProvider = new ConsistentHashingAddressProvider(nodeManager, new ConsistentHashingAddressProviderConfig());
+        NodeScheduler nodeScheduler = new NodeScheduler(new UniformNodeSelectorFactory(CURRENT_NODE, nodeManager, nodeSchedulerConfig, new NodeTaskMap(finalizerService), consistentHashingAddressProvider));
         this.sessionPropertyManager = createSessionPropertyManager(catalogManager, taskManagerConfig, optimizerConfig);
         this.nodePartitioningManager = new NodePartitioningManager(nodeScheduler, createNodePartitioningProvider(catalogManager));
         this.partitionFunctionProvider = new PartitionFunctionProvider(hashCompiler, createNodePartitioningProvider(catalogManager));
@@ -437,10 +465,10 @@ public class PlanTester
                 new JsonQueryFunction(functionManager, metadata, typeManager)));
 
         this.plannerContext = new PlannerContext(metadata, typeOperators, blockEncodingSerde, typeManager, functionManager, languageFunctionManager, tracer);
-        this.pageFunctionCompiler = new PageFunctionCompiler(functionManager, 0);
-        ColumnarFilterCompiler filterCompiler = new ColumnarFilterCompiler(functionManager, 0);
+        this.pageFunctionCompiler = new PageFunctionCompiler(functionManager, metadata, typeManager, 0);
+        ColumnarFilterCompiler filterCompiler = new ColumnarFilterCompiler(plannerContext, 0);
         this.expressionCompiler = new ExpressionCompiler(pageFunctionCompiler, filterCompiler);
-        this.joinFilterFunctionCompiler = new JoinFilterFunctionCompiler(functionManager);
+        this.joinFilterFunctionCompiler = new JoinFilterFunctionCompiler(functionManager, metadata, typeManager);
 
         this.statementAnalyzerFactory = new StatementAnalyzerFactory(
                 plannerContext,
@@ -483,7 +511,7 @@ public class PlanTester
                 noop(),
                 noopTracer());
         this.pluginManager = new PluginManager(
-                (loader, createClassLoader) -> {},
+                (_, _) -> {},
                 Optional.empty(),
                 catalogFactory,
                 globalFunctionCatalog,

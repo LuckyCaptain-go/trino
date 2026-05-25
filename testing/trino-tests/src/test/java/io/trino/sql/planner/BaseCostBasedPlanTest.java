@@ -159,10 +159,11 @@ public abstract class BaseCostBasedPlanTest
 
         // for EXPLAIN ANALYZE, the first two lines reflect the additional root fragment containing the ExplainAnalyze operator
         assertThat(String.join("\n", Arrays.copyOfRange(explainAnalyzeLines, 0, 2)) + "\n")
-                .isEqualTo("""
-                           local exchange (GATHER, SINGLE, [])
-                               remote exchange (GATHER, SINGLE, [])
-                           """);
+                .isEqualTo(
+                        """
+                        local exchange (GATHER, SINGLE, [])
+                            remote exchange (GATHER, SINGLE, [])
+                        """);
 
         // the remaining lines should match the original query plan, except for the indentation
         explainAnalyzeQueryPlan = Arrays.stream(Arrays.copyOfRange(explainAnalyzeLines, 2, explainAnalyzeLines.length))
@@ -307,8 +308,7 @@ public abstract class BaseCostBasedPlanTest
         public Void visitExchange(ExchangeNode node, Integer indent)
         {
             Partitioning partitioning = node.getPartitioningScheme().getPartitioning();
-            output(
-                    indent,
+            output(indent,
                     "%s exchange (%s, %s, %s)",
                     node.getScope().name().toLowerCase(ENGLISH),
                     node.getType(),
@@ -324,8 +324,7 @@ public abstract class BaseCostBasedPlanTest
         @Override
         public Void visitAggregation(AggregationNode node, Integer indent)
         {
-            output(
-                    indent,
+            output(indent,
                     "%s aggregation over (%s)",
                     node.getStep().name().toLowerCase(ENGLISH),
                     node.getGroupingKeys().stream()

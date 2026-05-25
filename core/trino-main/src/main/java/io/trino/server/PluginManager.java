@@ -74,9 +74,9 @@ public class PluginManager
             .add("io.trino.spi.")
             .add("com.fasterxml.jackson.annotation.")
             .add("io.airlift.slice.")
-            .add("org.openjdk.jol.")
             .add("io.opentelemetry.api.")
             .add("io.opentelemetry.context.")
+            .add("org.locationtech.jts.")
             .build();
 
     private static final Logger log = Logger.get(PluginManager.class);

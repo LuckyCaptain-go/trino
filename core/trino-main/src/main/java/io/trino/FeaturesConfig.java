@@ -85,10 +85,7 @@ public class FeaturesConfig
 {
     public enum DataIntegrityVerification
     {
-        NONE,
-        ABORT,
-        RETRY,
-        /**/;
+        NONE, ABORT, RETRY,
     }
 
     @VisibleForTesting
@@ -129,8 +126,9 @@ public class FeaturesConfig
     private boolean forceSpillingJoin;
 
     private boolean columnarFilterEvaluationEnabled = true;
+    private boolean adaptiveFilterReorderingEnabled = true;
 
-    private boolean faultTolerantExecutionExchangeEncryptionEnabled = true;
+    private boolean externalExchangeEncryptionEnabled = true;
 
     private boolean legacyArithmeticDecimalOperators;
 
@@ -509,16 +507,29 @@ public class FeaturesConfig
         return this;
     }
 
-    public boolean isFaultTolerantExecutionExchangeEncryptionEnabled()
+    public boolean isAdaptiveFilterReorderingEnabled()
     {
-        return faultTolerantExecutionExchangeEncryptionEnabled;
+        return adaptiveFilterReorderingEnabled;
     }
 
-    @Config("fault-tolerant-execution-exchange-encryption-enabled")
-    @LegacyConfig("fault-tolerant-execution.exchange-encryption-enabled")
-    public FeaturesConfig setFaultTolerantExecutionExchangeEncryptionEnabled(boolean faultTolerantExecutionExchangeEncryptionEnabled)
+    @Config("experimental.adaptive-filter-reordering.enabled")
+    @ConfigDescription("Reorder conjunctive/disjunctive filter terms at runtime based on observed selectivity and performance")
+    public FeaturesConfig setAdaptiveFilterReorderingEnabled(boolean adaptiveFilterReorderingEnabled)
     {
-        this.faultTolerantExecutionExchangeEncryptionEnabled = faultTolerantExecutionExchangeEncryptionEnabled;
+        this.adaptiveFilterReorderingEnabled = adaptiveFilterReorderingEnabled;
+        return this;
+    }
+
+    public boolean isExternalExchangeEncryptionEnabled()
+    {
+        return externalExchangeEncryptionEnabled;
+    }
+
+    @Config("external-exchange-encryption-enabled")
+    @LegacyConfig({"fault-tolerant-execution-exchange-encryption-enabled", "fault-tolerant-execution.exchange-encryption-enabled"})
+    public FeaturesConfig setExternalExchangeEncryptionEnabled(boolean externalExchangeEncryptionEnabled)
+    {
+        this.externalExchangeEncryptionEnabled = externalExchangeEncryptionEnabled;
         return this;
     }
 

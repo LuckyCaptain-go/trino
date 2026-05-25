@@ -15,22 +15,8 @@ package io.trino.plugin.hive;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.net.HostAndPort;
 import io.airlift.slice.Slices;
 import io.trino.filesystem.TrinoFileSystemFactory;
-import io.trino.filesystem.hdfs.HdfsFileSystemFactory;
-import io.trino.hdfs.DynamicHdfsConfiguration;
-import io.trino.hdfs.HdfsConfig;
-import io.trino.hdfs.HdfsConfigurationInitializer;
-import io.trino.hdfs.HdfsEnvironment;
-import io.trino.hdfs.TrinoHdfsFileSystemStats;
-import io.trino.hdfs.authentication.NoHdfsAuthentication;
-import io.trino.hdfs.azure.HiveAzureConfig;
-import io.trino.hdfs.azure.TrinoAzureConfigurationInitializer;
-import io.trino.hdfs.gcs.GoogleGcsConfigurationInitializer;
-import io.trino.hdfs.gcs.HiveGcsConfig;
-import io.trino.hdfs.s3.HiveS3Config;
-import io.trino.hdfs.s3.TrinoS3ConfigurationInitializer;
 import io.trino.operator.PagesIndex;
 import io.trino.operator.PagesIndexPageSorter;
 import io.trino.plugin.base.metrics.FileFormatDataSourceStats;
@@ -104,27 +90,6 @@ public final class HiveTestUtils
 
     public static final ConnectorSession SESSION = getHiveSession(new HiveConfig());
 
-    public static final Optional<HostAndPort> SOCKS_PROXY = Optional.ofNullable(System.getProperty("hive.metastore.thrift.client.socks-proxy"))
-            .map(HostAndPort::fromString);
-
-    public static final DynamicHdfsConfiguration HDFS_CONFIGURATION = new DynamicHdfsConfiguration(
-            new HdfsConfigurationInitializer(
-                    new HdfsConfig()
-                            .setSocksProxy(SOCKS_PROXY.orElse(null)),
-                    ImmutableSet.of(
-                            new TrinoS3ConfigurationInitializer(new HiveS3Config()),
-                            new GoogleGcsConfigurationInitializer(new HiveGcsConfig()),
-                            new TrinoAzureConfigurationInitializer(new HiveAzureConfig()))),
-            ImmutableSet.of());
-
-    public static final HdfsEnvironment HDFS_ENVIRONMENT = new HdfsEnvironment(
-            HDFS_CONFIGURATION,
-            new HdfsConfig(),
-            new NoHdfsAuthentication());
-
-    public static final TrinoHdfsFileSystemStats HDFS_FILE_SYSTEM_STATS = new TrinoHdfsFileSystemStats();
-    public static final HdfsFileSystemFactory HDFS_FILE_SYSTEM_FACTORY = new HdfsFileSystemFactory(HDFS_ENVIRONMENT, HDFS_FILE_SYSTEM_STATS);
-
     public static final PageSorter PAGE_SORTER = new PagesIndexPageSorter(new PagesIndex.TestingFactory(false));
 
     public static ConnectorSession getHiveSession(HiveConfig hiveConfig)
@@ -197,7 +162,7 @@ public final class HiveTestUtils
                 .add(new AvroFileWriterFactory(fileSystemFactory, TESTING_TYPE_MANAGER, nodeVersion))
                 .add(new RcFileFileWriterFactory(fileSystemFactory, TESTING_TYPE_MANAGER, nodeVersion, hiveConfig))
                 .add(new OrcFileWriterFactory(fileSystemFactory, TESTING_TYPE_MANAGER, nodeVersion, new FileFormatDataSourceStats(), new OrcWriterConfig()))
-                .add(new ParquetFileWriterFactory(fileSystemFactory, nodeVersion, TESTING_TYPE_MANAGER, hiveConfig, new FileFormatDataSourceStats()))
+                .add(new ParquetFileWriterFactory(fileSystemFactory, nodeVersion, TESTING_TYPE_MANAGER, hiveConfig, new ParquetWriterConfig(), new FileFormatDataSourceStats()))
                 .build();
     }
 

@@ -41,9 +41,9 @@ import io.trino.spi.function.Signature;
 import io.trino.spi.function.SqlNullable;
 import io.trino.spi.function.SqlType;
 import io.trino.spi.function.TypeParameter;
+import io.trino.spi.type.FunctionType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeSignature;
-import io.trino.type.FunctionType;
 
 import java.lang.annotation.Annotation;
 import java.lang.invoke.MethodHandle;
@@ -54,6 +54,7 @@ import java.lang.reflect.Parameter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -153,7 +154,7 @@ public class ParametricScalarImplementation
     public Optional<SpecializedSqlScalarFunction> specialize(FunctionBinding functionBinding, FunctionDependencies functionDependencies)
     {
         List<ScalarImplementationChoice> implementationChoices = new ArrayList<>();
-        for (Map.Entry<String, Class<?>> entry : specializedTypeParameters.entrySet()) {
+        for (Entry<String, Class<?>> entry : specializedTypeParameters.entrySet()) {
             if (!entry.getValue().isAssignableFrom(functionBinding.variables().getTypeVariable(entry.getKey()).getJavaType())) {
                 return Optional.empty();
             }
@@ -243,35 +244,26 @@ public class ParametricScalarImplementation
             InvocationArgumentConvention argumentConvention = argumentConventions.get(i);
             Type signatureType = signature.getArgumentTypes().get(i);
             switch (argumentConvention) {
-                case NEVER_NULL:
-                    methodHandleParameterTypes.add(signatureType.getJavaType());
-                    break;
-                case NULL_FLAG:
+                case NEVER_NULL -> methodHandleParameterTypes.add(signatureType.getJavaType());
+                case NULL_FLAG -> {
                     methodHandleParameterTypes.add(signatureType.getJavaType());
                     methodHandleParameterTypes.add(boolean.class);
-                    break;
-                case BOXED_NULLABLE:
-                    methodHandleParameterTypes.add(Primitives.wrap(signatureType.getJavaType()));
-                    break;
-                case BLOCK_POSITION_NOT_NULL:
-                case BLOCK_POSITION:
+                }
+                case BOXED_NULLABLE -> methodHandleParameterTypes.add(Primitives.wrap(signatureType.getJavaType()));
+                case BLOCK_POSITION_NOT_NULL, BLOCK_POSITION -> {
                     methodHandleParameterTypes.add(Block.class);
                     methodHandleParameterTypes.add(int.class);
-                    break;
-                case VALUE_BLOCK_POSITION:
-                case VALUE_BLOCK_POSITION_NOT_NULL:
+                }
+                case VALUE_BLOCK_POSITION, VALUE_BLOCK_POSITION_NOT_NULL -> {
                     methodHandleParameterTypes.add(ValueBlock.class);
                     methodHandleParameterTypes.add(int.class);
-                    break;
-                case IN_OUT:
-                    methodHandleParameterTypes.add(InOut.class);
-                    break;
-                case FUNCTION:
+                }
+                case IN_OUT -> methodHandleParameterTypes.add(InOut.class);
+                case FUNCTION -> {
                     methodHandleParameterTypes.add(choice.getLambdaInterfaces().get(lambdaArgumentIndex));
                     lambdaArgumentIndex++;
-                    break;
-                default:
-                    throw new UnsupportedOperationException("unknown argument convention: " + argumentConvention);
+                }
+                default -> throw new UnsupportedOperationException("unknown argument convention: " + argumentConvention);
             }
         }
 
@@ -518,7 +510,9 @@ public class ParametricScalarImplementation
             for (TypeParameter typeParameter : typeParameters) {
                 checkArgument(
                         typeParameter.value().matches("[A-Z][A-Z0-9]*"),
-                        "Expected type parameter to only contain A-Z and 0-9 (starting with A-Z), but got %s on method [%s]", typeParameter.value(), method);
+                        "Expected type parameter to only contain A-Z and 0-9 (starting with A-Z), but got %s on method [%s]",
+                        typeParameter.value(),
+                        method);
             }
 
             inferSpecialization(method, actualReturnType, returnType.value());

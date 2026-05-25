@@ -260,7 +260,8 @@ public final class StatisticsAwareJdbcClient
     }
 
     @Override
-    public Optional<PreparedQuery> implementJoin(ConnectorSession session,
+    public Optional<PreparedQuery> implementJoin(
+            ConnectorSession session,
             JoinType joinType,
             PreparedQuery leftSource,
             Map<JdbcColumnHandle, String> leftProjections,
@@ -273,7 +274,8 @@ public final class StatisticsAwareJdbcClient
     }
 
     @Override
-    public Optional<PreparedQuery> legacyImplementJoin(ConnectorSession session,
+    public Optional<PreparedQuery> legacyImplementJoin(
+            ConnectorSession session,
             JoinType joinType,
             PreparedQuery leftSource,
             PreparedQuery rightSource,
@@ -400,9 +402,15 @@ public final class StatisticsAwareJdbcClient
     }
 
     @Override
-    public void rollbackCreateTable(ConnectorSession session, JdbcOutputTableHandle handle)
+    public void rollbackDestinationTableCreation(ConnectorSession session, RemoteTableName remoteTableName)
     {
-        stats.getRollbackCreateTable().wrap(() -> delegate().rollbackCreateTable(session, handle));
+        stats.getRollbackDestinationTableCreation().wrap(() -> delegate().rollbackDestinationTableCreation(session, remoteTableName));
+    }
+
+    @Override
+    public void rollbackTemporaryTableCreation(ConnectorSession session, JdbcOutputTableHandle handle)
+    {
+        stats.getRollbackTemporaryTableCreation().wrap(() -> delegate().rollbackTemporaryTableCreation(session, handle));
     }
 
     @Override

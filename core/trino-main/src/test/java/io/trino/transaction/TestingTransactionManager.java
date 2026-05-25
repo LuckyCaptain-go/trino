@@ -53,7 +53,7 @@ public class TestingTransactionManager
         return new TransactionInfo(
                 transactionId,
                 IsolationLevel.READ_UNCOMMITTED,
-                false, //read only
+                false, // read only
                 false, // auto commit
                 Instant.now(), // created
                 Duration.succinctNanos(0), // idle
@@ -113,6 +113,12 @@ public class TestingTransactionManager
 
     @Override
     public Optional<CatalogMetadata> getOptionalCatalogMetadata(TransactionId transactionId, String catalogName)
+    {
+        return Optional.empty();
+    }
+
+    @Override
+    public Optional<CatalogInfo> getOptionalCatalogInfo(TransactionId requiredTransactionId, String catalogName)
     {
         return Optional.empty();
     }

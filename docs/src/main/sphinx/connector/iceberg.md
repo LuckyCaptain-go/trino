@@ -4,10 +4,11 @@
 <img src="../_static/img/iceberg.png" class="connector-logo">
 ```
 
-Apache Iceberg is an open table format for huge analytic datasets. The Iceberg
-connector allows querying data stored in files written in Iceberg format, as
-defined in the [Iceberg Table Spec](https://iceberg.apache.org/spec/). The
-connector supports Apache Iceberg table spec versions 1 and 2.
+Apache Iceberg is an open table format for huge analytic datasets.
+The Iceberg connector allows querying data stored in files written in Iceberg
+format, as defined in the [Iceberg Table Spec](https://iceberg.apache.org/spec/).
+The connector supports Apache Iceberg table spec versions 1 and 2.
+Support for format version 3 is experimental.
 
 The table state is maintained in metadata files. All changes to table
 state create a new metadata file and replace the old metadata with an atomic
@@ -277,8 +278,9 @@ The connector supports accessing the following file systems:
 * [](/object-storage/file-system-s3)
 * [](/object-storage/file-system-hdfs)
 
-You must enable and configure the specific file system access. [Legacy
-support](file-system-legacy) is not recommended and will be removed.
+Enable and configure the file system that your catalog uses. Use
+`fs.hadoop.enabled` only for HDFS; see [legacy file system
+support](file-system-legacy) for migration details.
 
 ## Type mapping
 
@@ -327,8 +329,12 @@ the following table:
   - `TIME(6)`
 * - `TIMESTAMP`
   - `TIMESTAMP(6)`
+* - `TIMESTAMP_NS`
+  - `TIMESTAMP(9)`
 * - `TIMESTAMPTZ`
   - `TIMESTAMP(6) WITH TIME ZONE`
+* - `TIMESTAMPTZ_NS`
+  - `TIMESTAMP(9) WITH TIME ZONE`
 * - `STRING`
   - `VARCHAR`
 * - `UUID`
@@ -337,6 +343,8 @@ the following table:
   - `VARBINARY`
 * - `FIXED (L)`
   - `VARBINARY`
+* - `VARIANT`
+  - `VARIANT`
 * - `STRUCT(...)`
   - `ROW(...)`
 * - `LIST(e)`
@@ -344,6 +352,9 @@ the following table:
 * - `MAP(k,v)`
   - `MAP(k,v)`
 :::
+
+`TIMESTAMP_NS` and `TIMESTAMPTZ_NS` are supported only for Iceberg format
+version `3` tables.
 
 No other types are supported.
 
@@ -376,20 +387,32 @@ the following table:
   - `TIME`
 * - `TIMESTAMP(6)`
   - `TIMESTAMP`
+* - `TIMESTAMP(9)`
+  - `TIMESTAMP_NS`
 * - `TIMESTAMP(6) WITH TIME ZONE`
   - `TIMESTAMPTZ`
+* - `TIMESTAMP(9) WITH TIME ZONE`
+  - `TIMESTAMPTZ_NS`
 * - `VARCHAR`
   - `STRING`
 * - `UUID`
   - `UUID`
 * - `VARBINARY`
   - `BINARY`
+* - `VARIANT`
+  - `VARIANT`
 * - `ROW(...)`
   - `STRUCT(...)`
 * - `ARRAY(e)`
   - `LIST(e)`
 * - `MAP(k,v)`
   - `MAP(k,v)`
+:::
+
+:::{note}
+Iceberg `VARIANT` is supported only for tables using Iceberg format version `3`
+or higher. To create a table with `VARIANT` columns, set
+`format_version = 3` in the `WITH` clause. The default is `2`.
 :::
 
 No other types are supported.
@@ -846,6 +869,14 @@ following conditions are met per partition:
 ALTER TABLE test_table EXECUTE optimize
 ```
 
+```text
+        metric_name         | metric_value
+----------------------------+--------------
+ rewritten_data_files_count |            1
+ removed_delete_files_count |            1
+ added_data_files_count     |            2
+```
+
 The following statement merges files in a table that are
 under 128 megabytes in size:
 
@@ -954,6 +985,7 @@ ALTER TABLE test_table EXECUTE remove_orphan_files(retention_threshold => '7d');
  active_files_count         |           98
  scanned_files_count        |           97
  deleted_files_count        |            0
+ deleted_bytes              |            0
 ```
 
 The value for `retention_threshold` must be higher than or equal to
@@ -978,6 +1010,8 @@ The output of the query has the following metrics:
   - The count of files scanned from the file system.
 * - `deleted_files_count`
   - The count of files deleted by remove_orphan_files.
+* - `deleted_bytes`
+  - The total size in bytes of files deleted by remove_orphan_files.
 :::
 
 (drop-extended-stats)=
@@ -1067,6 +1101,7 @@ connector using a {doc}`WITH </sql/create-table-as>` clause.
     for row level deletes. Version `3` support is experimental; row-level
     updates, deletes, and OPTIMIZE are not supported. Tables with v3 features
     such as column default values and encryption are not supported.
+    Version `3` is required for tables containing `VARIANT` columns.
 * - `max_commit_retry`
   - Number of times to retry a commit before failing. Defaults to the value of 
     the `iceberg.max-commit-retry` catalog configuration property, which 
@@ -1458,9 +1493,9 @@ SELECT * FROM "test_table$files";
 ```
 
 ```text
- content  | file_path                                                                                                                     | record_count    | file_format   | file_size_in_bytes   |  column_sizes        |  value_counts     |  null_value_counts | nan_value_counts  | lower_bounds                |  upper_bounds               |  key_metadata  | split_offsets  |  equality_ids
-----------+-------------------------------------------------------------------------------------------------------------------------------+-----------------+---------------+----------------------+----------------------+-------------------+--------------------+-------------------+-----------------------------+-----------------------------+----------------+----------------+---------------
- 0        | hdfs://hadoop-master:9000/user/hive/warehouse/test_table/data/c1=3/c2=2021-01-14/af9872b2-40f3-428f-9c87-186d2750d84e.parquet |  1              |  PARQUET      |  442                 | {1=40, 2=40, 3=44}   |  {1=1, 2=1, 3=1}  |  {1=0, 2=0, 3=0}   | <null>            |  {1=3, 2=2021-01-14, 3=1.3} |  {1=3, 2=2021-01-14, 3=1.3} |  <null>        | <null>         |   <null>
+  content  | file_path                                                                                                                     | record_count    | file_format   | file_size_in_bytes   |  column_sizes        |  value_counts     |  null_value_counts | nan_value_counts  | lower_bounds                |  upper_bounds               |  key_metadata  | split_offsets  |  equality_ids  | added_snapshot_id  | file_sequence_number | data_sequence_number | referenced_data_file | pos | manifest_location                                                                                                            | first_row_id | content_offset | content_size_in_bytes
+----------+-------------------------------------------------------------------------------------------------------------------------------+-----------------+---------------+----------------------+----------------------+-------------------+--------------------+-------------------+-----------------------------+-----------------------------+----------------+----------------+----------------+--------------------+----------------------+----------------------+----------------------+-----+------------------------------------------------------------------------------------------------------------------------------+--------------+----------------+----------------------
+ 0        | hdfs://hadoop-master:9000/user/hive/warehouse/test_table/data/c1=3/c2=2021-01-14/af9872b2-40f3-428f-9c87-186d2750d84e.parquet |  1              |  PARQUET      |  442                 | {1=40, 2=40, 3=44}   |  {1=1, 2=1, 3=1}  |  {1=0, 2=0, 3=0}   | <null>            |  {1=3, 2=2021-01-14, 3=1.3} |  {1=3, 2=2021-01-14, 3=1.3} |  <null>        | <null>         |   <null>       | 6116016324956900164 | 1                    | 1                    | <null>               | 0   | hdfs://hadoop-master:9000/user/hive/warehouse/test_table/metadata/snap-6116016324956900164-0-3c1b2496-0670-4e37-81f6.avro    | <null>       | <null>         | <null>
 ```
 
 The output of the query has the following columns:
@@ -1538,6 +1573,43 @@ The output of the query has the following columns:
 * - `readable_metrics`
   - `JSON`
   - File metrics in human-readable form.
+* - `added_snapshot_id`
+  - `BIGINT`
+  - The snapshot ID when the file was first added to the table, as recorded in
+    the selected snapshot's live manifest entry. This makes it possible to join
+    current live files with `$snapshots` to inspect when each file was
+    introduced. If a file is moved to a different manifest by manifest rewrite,
+    the manifest location may change, but `added_snapshot_id` still refers to
+    the snapshot in which the file was originally added. Use `$entries` or
+    `$all_entries` to inspect historical manifest references across snapshots.
+* - `file_sequence_number`
+  - `BIGINT`
+  - The sequence number of the file, tracking when the file was added.
+* - `data_sequence_number`
+  - `BIGINT`
+  - The data sequence number for the file, used for determining row-level deletes
+    applicability.
+* - `referenced_data_file`
+  - `VARCHAR`
+  - The path of the data file that a delete file applies to. Only set for
+    position delete files and deletion vectors, `NULL` for data files.
+* - `pos`
+  - `BIGINT`
+  - The ordinal position of the file in the manifest.
+* - `manifest_location`
+  - `VARCHAR`
+  - The location of the manifest that contains this file.
+* - `first_row_id`
+  - `BIGINT`
+  - The ID of the first row in the data file.
+* - `content_offset`
+  - `BIGINT`
+  - The offset in the file where the content starts. Only set for deletion
+    vectors, `NULL` for data files.
+* - `content_size_in_bytes`
+  - `BIGINT`
+  - The size of the content in bytes. Only set for deletion vectors, `NULL` for
+    data files.
 :::
 
 ##### `$entries` and `$all_entries` tables

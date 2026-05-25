@@ -68,6 +68,7 @@ import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -347,8 +348,7 @@ public abstract class BaseJdbcClient
                         .build()));
                 if (columnMapping.isEmpty()) {
                     UnsupportedTypeHandling unsupportedTypeHandling = getUnsupportedTypeHandling(session);
-                    verify(
-                            unsupportedTypeHandling == IGNORE,
+                    verify(unsupportedTypeHandling == IGNORE,
                             "Unsupported type handling is set to %s, but toColumnMapping() returned empty for %s",
                             unsupportedTypeHandling,
                             typeHandle);
@@ -616,7 +616,7 @@ public abstract class BaseJdbcClient
         return Optional.of(ColumnMapping.sliceMapping(
                 unboundedVarcharType,
                 varcharReadFunction(unboundedVarcharType),
-                (statement, index, value) -> {
+                (_, _, _) -> {
                     throw new TrinoException(
                             NOT_SUPPORTED,
                             "Underlying type that is mapped to VARCHAR is not supported for INSERT: " + typeHandle.jdbcTypeName().get());
@@ -835,7 +835,7 @@ public abstract class BaseJdbcClient
             if (shouldUseFaultTolerantExecution(session)) {
                 // Create the target table
                 JdbcOutputTableHandle destinationTableHandle = createTable(session, tableMetadata, tableMetadata.getTable().getTableName());
-                rollbackActionCollector.accept(() -> rollbackCreateDestinationTable(session, destinationTableHandle.getRemoteTableName()));
+                rollbackActionCollector.accept(() -> rollbackDestinationTableCreation(session, destinationTableHandle.getRemoteTableName()));
                 // Create the temporary table
                 ColumnMetadata pageSinkIdColumn = getPageSinkIdColumn(
                         tableMetadata.getColumns().stream().map(ColumnMetadata::getName).toList());
@@ -850,7 +850,8 @@ public abstract class BaseJdbcClient
         }
     }
 
-    protected void rollbackCreateDestinationTable(ConnectorSession session, RemoteTableName remoteTableName)
+    @Override
+    public void rollbackDestinationTableCreation(ConnectorSession session, RemoteTableName remoteTableName)
     {
         dropTable(session, remoteTableName, false);
     }
@@ -953,7 +954,7 @@ public abstract class BaseJdbcClient
 
     protected String getColumnDefinitionSql(ConnectorSession session, ColumnMetadata column, String columnName)
     {
-        if (column.getComment() != null) {
+        if (column.getComment().isPresent()) {
             throw new TrinoException(NOT_SUPPORTED, "This connector does not support creating tables with column comment");
         }
         StringBuilder sb = new StringBuilder()
@@ -1033,8 +1034,7 @@ public abstract class BaseJdbcClient
             addColumn(session, connection, new RemoteTableName(
                     Optional.ofNullable(catalog),
                     Optional.ofNullable(remoteSchema),
-                    remoteTemporaryTableName
-            ), pageSinkIdColumn.get());
+                    remoteTemporaryTableName), pageSinkIdColumn.get());
         }
 
         return new JdbcOutputTableHandle(
@@ -1128,10 +1128,12 @@ public abstract class BaseJdbcClient
 
         String pageSinkIdColumnName = handle.getPageSinkIdColumnName().get();
 
-        String pageSinkTableSql = format("CREATE TABLE %s (%s)",
+        String pageSinkTableSql = format(
+                "CREATE TABLE %s (%s)",
                 quoted(pageSinkTable),
                 getColumnDefinitionSql(session, new ColumnMetadata(pageSinkIdColumnName, TRINO_PAGE_SINK_ID_COLUMN_TYPE), pageSinkIdColumnName));
-        String pageSinkInsertSql = format("INSERT INTO %s (%s) VALUES (?)",
+        String pageSinkInsertSql = format(
+                "INSERT INTO %s (%s) VALUES (?)",
                 quoted(pageSinkTable),
                 pageSinkIdColumnName);
         pageSinkInsertSql = queryModifier.apply(session, pageSinkInsertSql);
@@ -1184,7 +1186,8 @@ public abstract class BaseJdbcClient
                     .map(this::quoted)
                     .collect(joining(", "));
 
-            String insertSql = format("INSERT INTO %s (%s) SELECT %s FROM %s temp_table",
+            String insertSql = format(
+                    "INSERT INTO %s (%s) SELECT %s FROM %s temp_table",
                     postProcessInsertTableNameClause(session, quoted(handle.getRemoteTableName())),
                     columns,
                     columns,
@@ -1193,7 +1196,8 @@ public abstract class BaseJdbcClient
             if (handle.getPageSinkIdColumnName().isPresent()) {
                 RemoteTableName pageSinkTable = constructPageSinkIdsTable(session, connection, handle, pageSinkIds, closer);
 
-                insertSql += format(" WHERE EXISTS (SELECT 1 FROM %s page_sink_table WHERE page_sink_table.%s = temp_table.%s)",
+                insertSql += format(
+                        " WHERE EXISTS (SELECT 1 FROM %s page_sink_table WHERE page_sink_table.%s = temp_table.%s)",
                         quoted(pageSinkTable),
                         handle.getPageSinkIdColumnName().get(),
                         handle.getPageSinkIdColumnName().get());
@@ -1239,7 +1243,7 @@ public abstract class BaseJdbcClient
         JdbcTableHandle plainTable = new JdbcTableHandle(schemaTableName, remoteTableName, Optional.empty());
 
         JdbcOutputTableHandle outputTableHandle = beginInsertTable(session, plainTable, columns);
-        rollbackActionCollector.accept(() -> rollbackCreateTable(session, outputTableHandle));
+        rollbackActionCollector.accept(() -> rollbackTemporaryTableCreation(session, outputTableHandle));
 
         try {
             return new JdbcMergeTableHandle(
@@ -1272,7 +1276,7 @@ public abstract class BaseJdbcClient
         SchemaTableName tableName = tableHandle.asPlainTable().getSchemaTableName();
 
         ImmutableMap.Builder<Integer, JdbcOutputTableHandle> outputHandles = ImmutableMap.builder();
-        for (Map.Entry<Integer, Collection<ColumnHandle>> entry : updateColumnHandles.entrySet()) {
+        for (Entry<Integer, Collection<ColumnHandle>> entry : updateColumnHandles.entrySet()) {
             int caseNumber = entry.getKey();
             checkArgument(caseNumber >= 0, "caseNumber shouldn't be negative, updateColumnHandles: %s", updateColumnHandles);
 
@@ -1301,7 +1305,7 @@ public abstract class BaseJdbcClient
                     generateTemporaryTableName(session),
                     Optional.of(getPageSinkIdColumn(updatedColumnNames)));
 
-            rollbackActionCollector.accept(() -> rollbackCreateTable(session, temporaryTableHandle));
+            rollbackActionCollector.accept(() -> rollbackTemporaryTableCreation(session, temporaryTableHandle));
             outputHandles.put(caseNumber, temporaryTableHandle);
         }
 
@@ -1319,7 +1323,7 @@ public abstract class BaseJdbcClient
         }
 
         JdbcOutputTableHandle handle = beginInsertTable(session, (JdbcTableHandle) tableHandle, primaryKeys);
-        rollbackActionCollector.accept(() -> rollbackCreateTable(session, handle));
+        rollbackActionCollector.accept(() -> rollbackTemporaryTableCreation(session, handle));
         return Optional.of(handle);
     }
 
@@ -1342,7 +1346,7 @@ public abstract class BaseJdbcClient
 
     private void addColumn(ConnectorSession session, RemoteTableName table, ColumnMetadata column)
     {
-        if (column.getComment() != null) {
+        if (column.getComment().isPresent()) {
             throw new TrinoException(NOT_SUPPORTED, "This connector does not support adding columns with comments");
         }
 
@@ -1460,10 +1464,11 @@ public abstract class BaseJdbcClient
     }
 
     @Override
-    public void rollbackCreateTable(ConnectorSession session, JdbcOutputTableHandle handle)
+    public void rollbackTemporaryTableCreation(ConnectorSession session, JdbcOutputTableHandle handle)
     {
         if (handle.getTemporaryTableName().isPresent()) {
-            dropTable(session,
+            dropTable(
+                    session,
                     new RemoteTableName(
                             handle.getRemoteTableName().getCatalogName(),
                             handle.getRemoteTableName().getSchemaName(),

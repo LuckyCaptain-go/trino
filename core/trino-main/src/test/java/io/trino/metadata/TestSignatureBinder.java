@@ -18,17 +18,18 @@ import com.google.common.collect.ImmutableSet;
 import io.trino.spi.function.Signature;
 import io.trino.spi.function.TypeVariableConstraint;
 import io.trino.spi.type.ArrayType;
+import io.trino.spi.type.FunctionType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeParameter;
 import io.trino.spi.type.TypeSignature;
 import io.trino.sql.analyzer.TypeSignatureProvider;
-import io.trino.type.FunctionType;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import static io.trino.metadata.SignatureBinder.applyBoundVariables;
 import static io.trino.spi.type.BigintType.BIGINT;
@@ -514,6 +515,24 @@ public class TestSignatureBinder
     }
 
     @Test
+    public void testUnknownToVariantIsCastableToWithoutRecursion()
+    {
+        // This forces SignatureBinder to evaluate EXPLICIT_COERCION_TO via canCast(actualType, variant).
+        Signature function = functionSignature()
+                .returnType(BOOLEAN)
+                .argumentType(new TypeSignature("T"))
+                .typeVariableConstraint(TypeVariableConstraint.builder("T")
+                        .castableTo(new TypeSignature("variant"))
+                        .build())
+                .build();
+
+        assertThat(function)
+                .boundTo(UNKNOWN)
+                .withCoercion()
+                .succeeds();
+    }
+
+    @Test
     public void testBasic()
     {
         Signature function = functionSignature()
@@ -953,8 +972,8 @@ public class TestSignatureBinder
         assertThat(applyTwice)
                 .boundTo(
                         INTEGER,
-                        new TypeSignatureProvider(functionArgumentTypes -> new FunctionType(ImmutableList.of(INTEGER), VARCHAR).getTypeSignature()),
-                        new TypeSignatureProvider(functionArgumentTypes -> new FunctionType(ImmutableList.of(VARCHAR), DOUBLE).getTypeSignature()))
+                        new TypeSignatureProvider(_ -> new FunctionType(ImmutableList.of(INTEGER), VARCHAR).getTypeSignature()),
+                        new TypeSignatureProvider(_ -> new FunctionType(ImmutableList.of(VARCHAR), DOUBLE).getTypeSignature()))
                 .produces(new BindingsBuilder()
                         .setTypeVariable("T", INTEGER)
                         .setTypeVariable("U", VARCHAR)
@@ -963,16 +982,16 @@ public class TestSignatureBinder
         assertThat(applyTwice)
                 .boundTo(
                         // pass function argument to non-function position of a function
-                        new TypeSignatureProvider(functionArgumentTypes -> new FunctionType(ImmutableList.of(INTEGER), VARCHAR).getTypeSignature()),
-                        new TypeSignatureProvider(functionArgumentTypes -> new FunctionType(ImmutableList.of(INTEGER), VARCHAR).getTypeSignature()),
-                        new TypeSignatureProvider(functionArgumentTypes -> new FunctionType(ImmutableList.of(VARCHAR), DOUBLE).getTypeSignature()))
+                        new TypeSignatureProvider(_ -> new FunctionType(ImmutableList.of(INTEGER), VARCHAR).getTypeSignature()),
+                        new TypeSignatureProvider(_ -> new FunctionType(ImmutableList.of(INTEGER), VARCHAR).getTypeSignature()),
+                        new TypeSignatureProvider(_ -> new FunctionType(ImmutableList.of(VARCHAR), DOUBLE).getTypeSignature()))
                 .fails();
         assertThat(applyTwice)
                 .boundTo(
-                        new TypeSignatureProvider(functionArgumentTypes -> new FunctionType(ImmutableList.of(INTEGER), VARCHAR).getTypeSignature()),
+                        new TypeSignatureProvider(_ -> new FunctionType(ImmutableList.of(INTEGER), VARCHAR).getTypeSignature()),
                         // pass non-function argument to function position of a function
                         INTEGER,
-                        new TypeSignatureProvider(functionArgumentTypes -> new FunctionType(ImmutableList.of(VARCHAR), DOUBLE).getTypeSignature()))
+                        new TypeSignatureProvider(_ -> new FunctionType(ImmutableList.of(VARCHAR), DOUBLE).getTypeSignature()))
                 .fails();
 
         Signature flatMap = functionSignature()
@@ -1038,7 +1057,7 @@ public class TestSignatureBinder
 
         Signature sortByKey = functionSignature()
                 .returnType(arrayType(new TypeSignature("T")))
-                 .argumentType(arrayType(new TypeSignature("T")))
+                .argumentType(arrayType(new TypeSignature("T")))
                 .argumentType(functionType(new TypeSignature("T"), new TypeSignature("E")))
                 .typeVariable("T")
                 .orderableTypeParameter("E")
@@ -1137,6 +1156,60 @@ public class TestSignatureBinder
         assertThat(multiCast)
                 .boundTo(new ArrayType(TIMESTAMP_MILLIS), JSON)
                 .fails();
+    }
+
+    @Test
+    public void testRowIsCastableToVariantWhenFieldsAreCastable()
+    {
+        Signature function = functionSignature()
+                .returnType(BOOLEAN)
+                .argumentType(new TypeSignature("T"))
+                .typeVariableConstraint(TypeVariableConstraint.builder("T")
+                        .rowType()
+                        .castableTo(parseTypeSignature("variant", Set.of()))
+                        .build())
+                .build();
+
+        assertThat(function)
+                .boundTo(RowType.anonymous(ImmutableList.of(BIGINT, DOUBLE)))
+                .withCoercion()
+                .succeeds();
+    }
+
+    @Test
+    public void testRowIsNotCastableToArbitraryTypeWithoutRecursiveOperator()
+    {
+        Signature function = functionSignature()
+                .returnType(BOOLEAN)
+                .argumentType(new TypeSignature("T"))
+                .typeVariableConstraint(TypeVariableConstraint.builder("T")
+                        .rowType()
+                        .castableTo(TIMESTAMP_MILLIS.getTypeSignature())
+                        .build())
+                .build();
+
+        assertThat(function)
+                .boundTo(RowType.anonymous(ImmutableList.of(BIGINT, DOUBLE)))
+                .withCoercion()
+                .fails();
+    }
+
+    @Test
+    public void testVariantIsCastableToRowWhenVariantIsCastableToEachField()
+    {
+        Signature function = functionSignature()
+                .returnType(BOOLEAN)
+                .argumentType(new TypeSignature("T"))
+                .typeVariableConstraint(TypeVariableConstraint.builder("T")
+                        .rowType()
+                        .castableFrom(parseTypeSignature("json", Set.of()))
+                        .build())
+                .build();
+
+        assertThat(function)
+                .boundTo(RowType.anonymous(ImmutableList.of(BIGINT, DOUBLE)))
+                .withCoercion()
+                .succeeds();
     }
 
     @Test

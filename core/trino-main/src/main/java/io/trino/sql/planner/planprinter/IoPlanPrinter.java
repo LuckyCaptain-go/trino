@@ -47,7 +47,7 @@ import io.trino.sql.planner.planprinter.IoPlanPrinter.FormattedMarker.Bound;
 import io.trino.sql.planner.planprinter.IoPlanPrinter.IoPlan.IoPlanBuilder;
 
 import java.util.HashSet;
-import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -596,7 +596,7 @@ public class IoPlanPrinter
         {
             BELOW,   // lower than the value, but infinitesimally close to the value
             EXACTLY, // exactly the value
-            ABOVE    // higher than the value, but infinitesimally close to the value
+            ABOVE,    // higher than the value, but infinitesimally close to the value
         }
 
         private final Optional<String> value;
@@ -761,7 +761,7 @@ public class IoPlanPrinter
                 return new Constraint(true, ImmutableSet.of());
             }
             ImmutableSet.Builder<ColumnConstraint> columnConstraints = ImmutableSet.builder();
-            for (Map.Entry<ColumnHandle, Domain> entry : constraint.getDomains().orElseThrow().entrySet()) {
+            for (Entry<ColumnHandle, Domain> entry : constraint.getDomains().orElseThrow().entrySet()) {
                 ColumnMetadata columnMetadata = plannerContext.getMetadata().getColumnMetadata(session, tableHandle, entry.getKey());
                 columnConstraints.add(new ColumnConstraint(
                         columnMetadata.getName(),
@@ -787,7 +787,7 @@ public class IoPlanPrinter
                                     .map(value -> new FormattedMarker(Optional.of(value), Bound.EXACTLY))
                                     .map(marker -> new FormattedRange(marker, marker))
                                     .collect(toImmutableSet())),
-                    allOrNone -> {
+                    _ -> {
                         throw new IllegalStateException("Unreachable AllOrNone consumer");
                     });
 

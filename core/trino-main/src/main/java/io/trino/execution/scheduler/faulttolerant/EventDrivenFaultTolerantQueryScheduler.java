@@ -129,6 +129,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -506,7 +507,8 @@ public class EventDrivenFaultTolerantQueryScheduler
                                 sourceFragments.stream()
                                         .map(sourceFragment -> {
                                             StageInfo stageInfo1 = reportedStageInfos.get(sourceFragment);
-                                            return stageInfo1.stageId(); })
+                                            return stageInfo1.stageId();
+                                        })
                                         .collect(toImmutableList())));
             });
 
@@ -766,7 +768,7 @@ public class EventDrivenFaultTolerantQueryScheduler
         private final Stopwatch noEventsStopwatch = Stopwatch.createUnstarted();
         private final Stopwatch debugInfoStopwatch = Stopwatch.createUnstarted();
         private final Optional<EventDebugInfos> eventDebugInfos;
-        private final Queue<Map.Entry<TaskId, RuntimeException>> taskFailures = new ArrayDeque<>(TASK_FAILURES_LOG_SIZE);
+        private final Queue<Entry<TaskId, RuntimeException>> taskFailures = new ArrayDeque<>(TASK_FAILURES_LOG_SIZE);
 
         private boolean started;
 
@@ -1365,7 +1367,8 @@ public class EventDrivenFaultTolerantQueryScheduler
             }
 
             if (speculative) {
-                log.debug("scheduling speculative %s/%s; sources: finished=%s; kinds=%s",
+                log.debug(
+                        "scheduling speculative %s/%s; sources: finished=%s; kinds=%s",
                         queryStateMachine.getQueryId(),
                         subPlan.getFragment().getId(),
                         finishedSourcesCount,
@@ -1447,6 +1450,7 @@ public class EventDrivenFaultTolerantQueryScheduler
 
                 StageId stageId = getStageId(fragment.getId());
                 SqlStage stage = SqlStage.createSqlStage(
+                        metadata,
                         stageId,
                         fragment,
                         TableInfo.extract(session, metadata, fragment),
@@ -1619,10 +1623,10 @@ public class EventDrivenFaultTolerantQueryScheduler
 
         private void processNodeAcquisitions()
         {
-            Iterator<Map.Entry<ScheduledTask, PreSchedulingTaskContext>> iterator = preSchedulingTaskContexts.entries().iterator();
+            Iterator<Entry<ScheduledTask, PreSchedulingTaskContext>> iterator = preSchedulingTaskContexts.entries().iterator();
             List<ScheduledTask> contextsToRemove = new ArrayList<>();
             while (iterator.hasNext()) {
-                Map.Entry<ScheduledTask, PreSchedulingTaskContext> entry = iterator.next();
+                Entry<ScheduledTask, PreSchedulingTaskContext> entry = iterator.next();
                 ScheduledTask scheduledTask = entry.getKey();
                 PreSchedulingTaskContext context = entry.getValue();
                 if (context.isWaitingForSinkInstanceHandle()) {
@@ -1673,7 +1677,7 @@ public class EventDrivenFaultTolerantQueryScheduler
             }
 
             // update pending acquires
-            for (Map.Entry<ScheduledTask, PreSchedulingTaskContext> entry : preSchedulingTaskContexts.entries()) {
+            for (Entry<ScheduledTask, PreSchedulingTaskContext> entry : preSchedulingTaskContexts.entries()) {
                 ScheduledTask scheduledTask = entry.getKey();
                 PreSchedulingTaskContext taskContext = entry.getValue();
 
@@ -1974,7 +1978,7 @@ public class EventDrivenFaultTolerantQueryScheduler
                 return unmodifiableCollection(contexts.values());
             }
 
-            public Set<Map.Entry<ScheduledTask, PreSchedulingTaskContext>> entries()
+            public Set<Entry<ScheduledTask, PreSchedulingTaskContext>> entries()
             {
                 return unmodifiableSet(contexts.entrySet());
             }
@@ -2046,7 +2050,7 @@ public class EventDrivenFaultTolerantQueryScheduler
     public static class StageExecution
     {
         private final TaskDescriptorStorage taskDescriptorStorage;
-        private final Queue<Map.Entry<TaskId, RuntimeException>> taskFailures;
+        private final Queue<Entry<TaskId, RuntimeException>> taskFailures;
 
         private final SqlStage stage;
         private final EventDrivenTaskSource taskSource;
@@ -2088,7 +2092,7 @@ public class EventDrivenFaultTolerantQueryScheduler
 
         private StageExecution(
                 TaskDescriptorStorage taskDescriptorStorage,
-                Queue<Map.Entry<TaskId, RuntimeException>> taskFailures,
+                Queue<Entry<TaskId, RuntimeException>> taskFailures,
                 SqlStage stage,
                 EventDrivenTaskSource taskSource,
                 FaultTolerantPartitioningScheme sinkPartitioningScheme,
@@ -2648,6 +2652,7 @@ public class EventDrivenFaultTolerantQueryScheduler
             // TODO[https://github.com/trinodb/trino/issues/18025]: split into smaller partitions here if necessary (for example if a task for a given partition failed with out of memory)
 
             // reschedule a task
+            log.warn(failure, "Rescheduling task %s due to %s error", taskId, errorCode != null ? errorCode.getName() : "unknown");
             return ImmutableList.of(PrioritizedScheduledTask.create(stage.getStageId(), partitionId, schedulingPriority));
         }
 
@@ -3047,8 +3052,7 @@ public class EventDrivenFaultTolerantQueryScheduler
                 RemoteTask task = tasks.get(taskId);
                 verify(task != null, "task is null: %s", taskId);
                 task.addSplits(ImmutableListMultimap.of(
-                        planNodeId,
-                        createOutputSelectorSplit(selector)));
+                        planNodeId, createOutputSelectorSplit(selector)));
                 if (selector.isFinal() && noMoreSplits.contains(planNodeId)) {
                     task.noMoreSplits(planNodeId);
                 }
@@ -3143,7 +3147,7 @@ public class EventDrivenFaultTolerantQueryScheduler
         {
             SplitsMapping.Builder updatedSplitsMapping = SplitsMapping.builder(this.splits);
 
-            for (Map.Entry<Integer, List<Split>> entry : Multimaps.asMap(splits).entrySet()) {
+            for (Entry<Integer, List<Split>> entry : Multimaps.asMap(splits).entrySet()) {
                 Integer sourcePartition = entry.getKey();
                 List<Split> partitionSplits = entry.getValue();
                 updatedSplitsMapping.addSplits(planNodeId, sourcePartition, partitionSplits);

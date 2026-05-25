@@ -115,7 +115,7 @@ public final class SortingFileWriter
     @Override
     public long getMemoryUsage()
     {
-        return INSTANCE_SIZE + sortBuffer.getRetainedBytes();
+        return INSTANCE_SIZE + sortBuffer.getRetainedBytes() + outputWriter.getMemoryUsage();
     }
 
     @Override
@@ -211,7 +211,7 @@ public final class SortingFileWriter
             int count = min(maxOpenTempFiles, tempFiles.size() - (maxOpenTempFiles - 1));
 
             List<TempFile> smallestFiles = IntStream.range(0, count)
-                    .mapToObj(i -> tempFiles.poll())
+                    .mapToObj(_ -> tempFiles.poll())
                     .collect(toImmutableList());
 
             writeTempFile(writer -> mergeFiles(smallestFiles, writer::writePage));
