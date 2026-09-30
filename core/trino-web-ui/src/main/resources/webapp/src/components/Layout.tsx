@@ -17,7 +17,6 @@ import {
     Avatar,
     AppBar,
     Box,
-    Container,
     IconButton,
     List,
     ListItem,
@@ -319,7 +318,7 @@ export const RootLayout = (props: { children: React.ReactNode }) => {
                                                 <DarkModeOutlined />
                                             ) : null}
                                         </ListItemIcon>
-                                        <Typography textAlign="center">{key}</Typography>
+                                        <Typography sx={{ textAlign: 'center' }}>{key}</Typography>
                                     </MenuItem>
                                 )
                             })}
@@ -383,7 +382,7 @@ export const RootLayout = (props: { children: React.ReactNode }) => {
                                         selected={routerItem.itemKey === selectedDrawerItemKey}
                                     >
                                         <ListItemIcon>{routerItem.icon}</ListItemIcon>
-                                        <ListItemText primary={routerItem.text} />
+                                        {drawerOpen && <ListItemText primary={routerItem.text} />}
                                     </ListItemButton>
                                 </ListItem>
                             )
@@ -398,7 +397,7 @@ export const RootLayout = (props: { children: React.ReactNode }) => {
             </Drawer>
             <Box component="main" sx={{ flexGrow: 1, p: 3 }}>
                 <Toolbar />
-                <Container maxWidth="lg">{props.children}</Container>
+                <Box sx={{ flexGrow: 1, px: 3 }}>{props.children}</Box>
             </Box>
         </Box>
     )

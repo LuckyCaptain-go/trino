@@ -16,7 +16,11 @@ package io.trino.sql.query;
 import com.google.common.base.Joiner;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMultiset;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Multiset;
+import com.google.common.collect.Multisets;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.CheckReturnValue;
 import io.trino.Session;
@@ -72,6 +76,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -82,6 +87,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.nullToEmpty;
 import static com.google.common.base.Suppliers.memoize;
 import static com.google.common.collect.Iterables.getOnlyElement;
+import static io.trino.SystemSessionProperties.getCharVarcharCoercion;
 import static io.trino.cost.StatsCalculator.noopStatsCalculator;
 import static io.trino.metadata.OperatorNameUtil.mangleOperatorName;
 import static io.trino.sql.ir.IrExpressions.mayFail;
@@ -627,6 +633,8 @@ public class QueryAssertions
             }
         };
 
+        private static final int MAX_REPORTED_ROWS = 100;
+
         private final QueryRunner runner;
         private final Session session;
         private final Description description;
@@ -718,17 +726,57 @@ public class QueryAssertions
                     hasTypes(expected.getTypes());
                 }
 
-                ListAssert<MaterializedRow> assertion = assertThat(actual.getMaterializedRows())
-                        .as("Rows for query [%s]", description)
-                        .withRepresentation(ROWS_REPRESENTATION);
-
                 if (ordered) {
-                    assertion.containsExactlyElementsOf(expected.getMaterializedRows());
+                    assertThat(actual.getMaterializedRows())
+                            .as("Rows for query [%s]", description)
+                            .withRepresentation(ROWS_REPRESENTATION)
+                            .containsExactlyElementsOf(expected.getMaterializedRows());
                 }
                 else {
-                    assertion.containsExactlyInAnyOrderElementsOf(expected.getMaterializedRows());
+                    assertRowsMatchInAnyOrder(actual.getMaterializedRows(), expected.getMaterializedRows());
                 }
             });
+        }
+
+        private void assertRowsMatchInAnyOrder(List<MaterializedRow> actualRows, List<MaterializedRow> expectedRows)
+        {
+            // AssertJ's containsExactlyInAnyOrder is quadratic in the row count, which makes large results take hours to compare
+            Multiset<MaterializedRow> actualMultiset = ImmutableMultiset.copyOf(actualRows);
+            Multiset<MaterializedRow> expectedMultiset = ImmutableMultiset.copyOf(expectedRows);
+            if (actualMultiset.equals(expectedMultiset)) {
+                return;
+            }
+
+            Multiset<MaterializedRow> unexpectedRows = Multisets.difference(actualMultiset, expectedMultiset);
+            Multiset<MaterializedRow> missingRows = Multisets.difference(expectedMultiset, actualMultiset);
+            StringBuilder message = new StringBuilder("Rows for query [%s] do not match: %s unexpected, %s missing (actual row count: %s, expected row count: %s)".formatted(
+                    description,
+                    unexpectedRows.size(),
+                    missingRows.size(),
+                    actualRows.size(),
+                    expectedRows.size()));
+            appendRows(message, "Unexpected rows", unexpectedRows);
+            appendRows(message, "Missing rows", missingRows);
+            fail(message.toString());
+        }
+
+        private static void appendRows(StringBuilder message, String title, Multiset<MaterializedRow> rows)
+        {
+            if (rows.isEmpty()) {
+                return;
+            }
+            Set<Multiset.Entry<MaterializedRow>> entries = rows.entrySet();
+            message.append("\n").append(title);
+            if (entries.size() > MAX_REPORTED_ROWS) {
+                message.append(" (first %s of %s distinct)".formatted(MAX_REPORTED_ROWS, entries.size()));
+            }
+            message.append(":");
+            for (Multiset.Entry<MaterializedRow> entry : Iterables.limit(entries, MAX_REPORTED_ROWS)) {
+                message.append("\n  ").append(ROWS_REPRESENTATION.toStringOf(entry.getElement()));
+                if (entry.getCount() > 1) {
+                    message.append(" (%s times)".formatted(entry.getCount()));
+                }
+            }
         }
 
         @CanIgnoreReturnValue
@@ -1001,7 +1049,7 @@ public class QueryAssertions
         public ExpressionAssert neverFails()
         {
             Expression expression = outermostExpression();
-            assertThat(mayFail(runner.getPlannerContext(), expression))
+            assertThat(mayFail(runner.getPlannerContext(), getCharVarcharCoercion(session), expression))
                     .as("Expression %s may fail", expression)
                     .isFalse();
             return this;
@@ -1014,7 +1062,7 @@ public class QueryAssertions
         public ExpressionAssert couldFail()
         {
             Expression expression = outermostExpression();
-            assertThat(mayFail(runner.getPlannerContext(), expression))
+            assertThat(mayFail(runner.getPlannerContext(), getCharVarcharCoercion(session), expression))
                     .as("Expression %s may fail", expression)
                     .isTrue();
             return this;

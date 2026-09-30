@@ -20,6 +20,7 @@ import com.google.common.util.concurrent.ListenableFuture;
 import io.trino.plugin.iceberg.IcebergColumnHandle;
 import io.trino.spi.BlocksHashFactory;
 import io.trino.spi.TrinoException;
+import io.trino.spi.connector.MemoryContext;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import org.apache.iceberg.Schema;
@@ -48,13 +49,15 @@ import static java.util.concurrent.Future.State.SUCCESS;
 public class DeleteManager
 {
     private final TypeManager typeManager;
-    private final Optional<BlocksHashFactory> blocksHashFactory;
+    private final BlocksHashFactory blocksHashFactory;
+    private final Runnable memoryUsageReporter;
     private final Map<List<Integer>, EqualityDeleteFilterBuilder> equalityDeleteFiltersBySchema = new ConcurrentHashMap<>();
 
-    public DeleteManager(TypeManager typeManager, Optional<BlocksHashFactory> blocksHashFactory)
+    public DeleteManager(TypeManager typeManager, BlocksHashFactory blocksHashFactory, Runnable memoryUsageReporter)
     {
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.blocksHashFactory = requireNonNull(blocksHashFactory, "blocksHashFactory is null");
+        this.memoryUsageReporter = requireNonNull(memoryUsageReporter, "memoryUsageReporter is null");
     }
 
     public Optional<PageFilter> getDeletePageFilter(
@@ -66,7 +69,8 @@ public class DeleteManager
             OptionalLong startRowPosition,
             OptionalLong endRowPosition,
             DeletionVectorReader deletionVectorReader,
-            DeletePageSourceProvider deletePageSourceProvider)
+            DeletePageSourceProvider deletePageSourceProvider,
+            MemoryContext memoryContext)
     {
         if (deleteFiles.isEmpty()) {
             return Optional.empty();
@@ -102,7 +106,10 @@ public class DeleteManager
                         startRowPosition,
                         endRowPosition,
                         deletePageSourceProvider,
-                        typeManager));
+                        typeManager,
+                        memoryContext));
+        // the vector is retained by the page filter until the page source memory context is closed
+        deletionVector.ifPresent(vector -> memoryContext.setBytes(vector.retainedSizeInBytes()));
 
         Optional<PageFilter> positionDeletes = deletionVector
                 .map(vector -> {
@@ -142,7 +149,7 @@ public class DeleteManager
         DeletionVector read(DeleteFile deleteFile);
     }
 
-    private List<DeleteFilter> createEqualityDeleteFilter(List<DeleteFile> equalityDeleteFiles, Schema schema, DeletePageSourceProvider deletePageSourceProvider)
+    private List<EqualityDeleteFilter> createEqualityDeleteFilter(List<DeleteFile> equalityDeleteFiles, Schema schema, DeletePageSourceProvider deletePageSourceProvider)
     {
         if (equalityDeleteFiles.isEmpty()) {
             return List.of();
@@ -161,13 +168,10 @@ public class DeleteManager
 
             // each file can have a different set of columns for the equality delete, so we need to create a new builder for each set of columns
             EqualityDeleteFilterBuilder builder = equalityDeleteFiltersBySchema.computeIfAbsent(fieldIds, _ -> {
-                if (blocksHashFactory.isPresent()) {
-                    List<Type> deleteTypes = deleteColumns.stream()
-                            .map(IcebergColumnHandle::getType)
-                            .collect(toImmutableList());
-                    return FlatEqualityDeleteFilter.builder(schemaFromHandles(deleteColumns), deleteTypes, blocksHashFactory.get());
-                }
-                return EqualityDeleteFilter.builder(schemaFromHandles(deleteColumns));
+                List<Type> deleteTypes = deleteColumns.stream()
+                        .map(IcebergColumnHandle::getType)
+                        .collect(toImmutableList());
+                return EqualityDeleteFilter.builder(schemaFromHandles(deleteColumns), deleteTypes, blocksHashFactory);
             });
             deleteFilters.add(builder);
 
@@ -175,6 +179,8 @@ public class DeleteManager
             if (loadFuture.state() != SUCCESS) {
                 pendingLoads.add(loadFuture);
             }
+            // loads that win the race run synchronously in this thread, so this reports each loaded file as it completes
+            memoryUsageReporter.run();
         }
 
         // Wait loads happening in other threads

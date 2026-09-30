@@ -278,6 +278,44 @@ public class TestJsonValueFunction
                 "SELECT json_value('" + INPUT + "', 'lax $[1]' RETURNING char(10))"))
                 .matches("VALUES cast('b' AS char(10))");
 
+        assertThat(assertions.query(
+                "SELECT json_value('\"2024-01-02\"', 'lax $.datetime()' RETURNING date)"))
+                .matches("VALUES DATE '2024-01-02'");
+
+        assertThat(assertions.query(
+                "SELECT json_value('\"12:34:56.789\"', 'lax $.datetime()' RETURNING time(3))"))
+                .matches("VALUES TIME '12:34:56.789'");
+
+        assertThat(assertions.query(
+                "SELECT json_value('\"12:34:56.789+05:30\"', 'lax $.datetime()' RETURNING time(3) with time zone)"))
+                .matches("VALUES TIME '12:34:56.789+05:30'");
+
+        assertThat(assertions.query(
+                "SELECT json_value('\"2024-01-02 12:34:56.789\"', 'lax $.datetime()' RETURNING timestamp(3))"))
+                .matches("VALUES TIMESTAMP '2024-01-02 12:34:56.789'");
+
+        assertThat(assertions.query(
+                "SELECT json_value('\"2024-01-02 12:34:56.789 UTC\"', 'lax $.datetime()' RETURNING timestamp(3) with time zone)"))
+                .matches("VALUES TIMESTAMP '2024-01-02 12:34:56.789 UTC'");
+
+        // a value that cannot be parsed as a datetime is a path evaluation error, so the ON ERROR clause applies
+        assertThat(assertions.query(
+                "SELECT json_value('\"not a datetime\"', 'lax $.datetime()' RETURNING date DEFAULT DATE '1970-01-01' ON ERROR)"))
+                .matches("VALUES DATE '1970-01-01'");
+
+        // with a format template, the value must match the template
+        assertThat(assertions.query(
+                "SELECT json_value('\"01/02/2024\"', 'lax $.datetime(\"MM/DD/YYYY\")' RETURNING date)"))
+                .matches("VALUES DATE '2024-01-02'");
+
+        assertThat(assertions.query(
+                "SELECT json_value('\"2024-01-02 12:34:56.789\"', 'lax $.datetime(\"YYYY-MM-DD HH24:MI:SS.FF3\")' RETURNING timestamp(3))"))
+                .matches("VALUES TIMESTAMP '2024-01-02 12:34:56.789'");
+
+        assertThat(assertions.query(
+                "SELECT json_value('\"2024-01-02\"', 'lax $.datetime(\"MM/DD/YYYY\")' RETURNING date DEFAULT DATE '1970-01-01' ON ERROR)"))
+                .matches("VALUES DATE '1970-01-01'");
+
         // the actual value does not fit in the expected returned type. the error is handled accordingly to the ON ERROR clause
         assertThat(assertions.query(
                 "SELECT json_value('" + INPUT + "', 'lax 1000' RETURNING tinyint)"))
@@ -299,6 +337,32 @@ public class TestJsonValueFunction
         assertThat(assertions.query(
                 "SELECT json_value('" + INPUT + "', 'lax 1000000000000 * 1000000000000' RETURNING bigint DEFAULT TINYINT '-1' ON ERROR)"))
                 .matches("VALUES BIGINT '-1'");
+    }
+
+    @Test
+    public void testNumber()
+    {
+        // TODO (https://github.com/trinodb/trino/issues/31150): number is not supported as the returned type
+        assertThat(assertions.query(
+                "SELECT json_value('" + INPUT + "', 'lax 1' RETURNING number)"))
+                .failure()
+                .hasErrorCode(TYPE_MISMATCH)
+                .hasMessage("line 1:8: Invalid return type of function JSON_VALUE: number");
+
+        // TODO (https://github.com/trinodb/trino/issues/31150): a number parameter is cast to varchar, so it is a JSON string in the path, not a JSON number
+        assertThat(assertions.query(
+                "SELECT json_value('" + INPUT + "', 'lax $parameter' PASSING CAST(1.5 AS number) AS \"parameter\")"))
+                .matches("VALUES cast('1.5' AS varchar)");
+
+        // arithmetic on a JSON string is a path evaluation error, handled accordingly to the ON ERROR clause
+        assertThat(assertions.query(
+                "SELECT json_value('" + INPUT + "', 'lax $parameter + 1' PASSING CAST(1 AS number) AS \"parameter\")"))
+                .matches("VALUES cast(null AS varchar)");
+
+        // the double() method parses a JSON string
+        assertThat(assertions.query(
+                "SELECT json_value('" + INPUT + "', 'lax $parameter.double()' PASSING CAST(1 AS number) AS \"parameter\")"))
+                .matches("VALUES VARCHAR '1.0E0'");
     }
 
     @Test

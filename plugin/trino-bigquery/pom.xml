@@ -5,7 +5,7 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>483-SNAPSHOT</version>
+        <version>484-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -25,18 +25,6 @@
                 <groupId>io.opencensus</groupId>
                 <artifactId>opencensus-api</artifactId>
                 <version>0.31.1</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.apache.httpcomponents</groupId>
-                <artifactId>httpcore</artifactId>
-                <version>4.4.16</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.conscrypt</groupId>
-                <artifactId>conscrypt-openjdk-uber</artifactId>
-                <version>2.5.2</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -185,12 +173,6 @@
         </dependency>
 
         <dependency>
-            <groupId>com.google.inject</groupId>
-            <artifactId>guice</artifactId>
-            <classifier>classes</classifier>
-        </dependency>
-
-        <dependency>
             <groupId>com.google.protobuf</groupId>
             <artifactId>protobuf-java</artifactId>
         </dependency>
@@ -213,6 +195,11 @@
         <dependency>
             <groupId>io.airlift</groupId>
             <artifactId>configuration</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.airlift</groupId>
+            <artifactId>guice</artifactId>
         </dependency>
 
         <dependency>
@@ -321,7 +308,7 @@
         <dependency>
             <groupId>org.json</groupId>
             <artifactId>json</artifactId>
-            <version>20260522</version>
+            <version>20260814</version>
         </dependency>
 
         <dependency>
@@ -539,6 +526,7 @@
                                 <exclude>**/TestBigQueryAvroConnectorTest.java</exclude>
                                 <exclude>**/TestBigQueryWithDifferentProjectIdConnectorSmokeTest.java</exclude>
                                 <exclude>**/TestBigQueryMetadataCaching.java</exclude>
+                                <exclude>**/TestBigQueryStaleNameResolution.java</exclude>
                                 <exclude>**/TestBigQueryAvroTypeMapping.java</exclude>
                                 <exclude>**/TestBigQueryArrowTypeMapping.java</exclude>
                                 <exclude>**/TestBigQueryArrowSerialization.java</exclude>
@@ -602,6 +590,7 @@
                                 <include>**/TestBigQueryArrowTypeMapping.java</include>
                                 <include>**/TestBigQueryAvroTypeMapping.java</include>
                                 <include>**/TestBigQueryMetadataCaching.java</include>
+                                <include>**/TestBigQueryStaleNameResolution.java</include>
                                 <include>**/TestBigQueryMetadata.java</include>
                                 <include>**/TestBigQuerySplitManager.java</include>
                                 <include>**/TestBigQuery*FailureRecoveryTest.java</include>

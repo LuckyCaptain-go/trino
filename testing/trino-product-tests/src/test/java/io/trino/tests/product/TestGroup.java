@@ -83,6 +83,16 @@ public @interface TestGroup
     @Tag("smoke")
     @interface Smoke {}
 
+    @Target({TYPE, METHOD})
+    @Retention(RUNTIME)
+    @Tag("sql_cancel")
+    @interface SqlCancel {}
+
+    @Target({TYPE, METHOD})
+    @Retention(RUNTIME)
+    @Tag("compatibility")
+    @interface Compatibility {}
+
     // JDBC
     @Target({TYPE, METHOD})
     @Retention(RUNTIME)
@@ -142,6 +152,11 @@ public @interface TestGroup
 
     @Target({TYPE, METHOD})
     @Retention(RUNTIME)
+    @Tag("tls_kerberos")
+    @interface TlsKerberos {}
+
+    @Target({TYPE, METHOD})
+    @Retention(RUNTIME)
     @Tag("authorization")
     @interface Authorization {}
 
@@ -160,6 +175,16 @@ public @interface TestGroup
     @Retention(RUNTIME)
     @Tag("postgresql")
     @interface Postgresql {}
+
+    @Target({TYPE, METHOD})
+    @Retention(RUNTIME)
+    @Tag("postgresql_secrets_provider")
+    @interface PostgresqlSecretsProvider {}
+
+    @Target({TYPE, METHOD})
+    @Retention(RUNTIME)
+    @Tag("postgresql_postgis")
+    @interface PostgresqlPostgis {}
 
     @Target({TYPE, METHOD})
     @Retention(RUNTIME)
@@ -374,8 +399,8 @@ public @interface TestGroup
 
     @Target({TYPE, METHOD})
     @Retention(RUNTIME)
-    @Tag("delta-lake-minio")
-    @interface DeltaLakeMinio {}
+    @Tag("delta-lake-floci")
+    @interface DeltaLakeFloci {}
 
     @Target({TYPE, METHOD})
     @Retention(RUNTIME)
@@ -394,13 +419,8 @@ public @interface TestGroup
 
     @Target({TYPE, METHOD})
     @Retention(RUNTIME)
-    @Tag("delta-lake-databricks-133")
-    @interface DeltaLakeDatabricks133 {}
-
-    @Target({TYPE, METHOD})
-    @Retention(RUNTIME)
-    @Tag("delta-lake-databricks-143")
-    @interface DeltaLakeDatabricks143 {}
+    @Tag("delta-lake-exclude-143")
+    @interface DeltaLakeExclude143 {}
 
     @Target({TYPE, METHOD})
     @Retention(RUNTIME)
@@ -414,8 +434,13 @@ public @interface TestGroup
 
     @Target({TYPE, METHOD})
     @Retention(RUNTIME)
-    @Tag("delta-lake-exclude-173")
-    @interface DeltaLakeExclude173 {}
+    @Tag("delta-lake-databricks-173")
+    @interface DeltaLakeDatabricks173 {}
+
+    @Target({TYPE, METHOD})
+    @Retention(RUNTIME)
+    @Tag("delta-lake-exclude-18")
+    @interface DeltaLakeExclude18 {}
 
     @Target({TYPE, METHOD})
     @Retention(RUNTIME)

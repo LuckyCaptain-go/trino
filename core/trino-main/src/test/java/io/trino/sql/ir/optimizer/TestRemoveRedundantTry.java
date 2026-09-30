@@ -22,29 +22,32 @@ import io.trino.sql.ir.Call;
 import io.trino.sql.ir.Cast;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.FieldReference;
 import io.trino.sql.ir.Lambda;
 import io.trino.sql.ir.Let;
 import io.trino.sql.ir.Reference;
+import io.trino.sql.ir.Row;
 import io.trino.sql.ir.optimizer.rule.RemoveRedundantTry;
 import io.trino.sql.planner.BuiltinFunctionCallBuilder;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.planner.SymbolAllocator;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
+import static io.trino.SystemSessionProperties.getCharVarcharCoercion;
 import static io.trino.operator.scalar.TryFunction.TRY_FUNCTION_NAME;
 import static io.trino.spi.function.OperatorType.EQUAL;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.planner.TestingPlannerContext.PLANNER_CONTEXT;
+import static io.trino.sql.planner.TestingSymbolAllocator.emptySymbolAllocator;
 import static io.trino.testing.TestingSession.testSession;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestRemoveRedundantTry
 {
     private static final ResolvedFunction EQUAL_BIGINT = PLANNER_CONTEXT.getMetadata()
-            .resolveOperator(EQUAL, ImmutableList.of(BIGINT, BIGINT));
+            .resolveOperator(getCharVarcharCoercion(testSession()), EQUAL, ImmutableList.of(BIGINT, BIGINT));
 
     @Test
     void testInfallibleBodyIsUnwrapped()
@@ -65,6 +68,14 @@ public class TestRemoveRedundantTry
     }
 
     @Test
+    void testFieldReferenceWithFallibleBaseIsLeftUnchanged()
+    {
+        Expression body = new FieldReference(new Row(ImmutableList.of(new Cast(new Reference(VARCHAR, "a"), BIGINT))), 0);
+        assertThat(optimize(tryExpression(body)))
+                .isEqualTo(Optional.empty());
+    }
+
+    @Test
     void testCapturedInfallibleBodyIsUnwrappedWithLet()
     {
         Symbol parameter = new Symbol(BIGINT, "a$captured");
@@ -72,7 +83,7 @@ public class TestRemoveRedundantTry
         Expression body = new Call(EQUAL_BIGINT, ImmutableList.of(parameter.toSymbolReference(), parameter.toSymbolReference()));
         Bind bind = new Bind(ImmutableList.of(value), new Lambda(ImmutableList.of(parameter), body));
 
-        Expression expression = BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
+        Expression expression = BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata(), getCharVarcharCoercion(testSession()))
                 .setName(TRY_FUNCTION_NAME)
                 .addArgument(bind.type(), bind)
                 .build();
@@ -93,7 +104,7 @@ public class TestRemoveRedundantTry
                 ImmutableList.of(firstValue, secondValue),
                 new Lambda(ImmutableList.of(firstParameter, secondParameter), body));
 
-        Expression expression = BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
+        Expression expression = BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata(), getCharVarcharCoercion(testSession()))
                 .setName(TRY_FUNCTION_NAME)
                 .addArgument(bind.type(), bind)
                 .build();
@@ -104,7 +115,7 @@ public class TestRemoveRedundantTry
 
     private static Expression tryExpression(Expression body)
     {
-        return BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
+        return BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata(), getCharVarcharCoercion(testSession()))
                 .setName(TRY_FUNCTION_NAME)
                 .addArgument(new FunctionType(ImmutableList.of(), body.type()), new Lambda(ImmutableList.of(), body))
                 .build();
@@ -112,6 +123,6 @@ public class TestRemoveRedundantTry
 
     private static Optional<Expression> optimize(Expression expression)
     {
-        return new RemoveRedundantTry(PLANNER_CONTEXT).apply(expression, testSession(), new SymbolAllocator(), ImmutableMap.of());
+        return new RemoveRedundantTry(PLANNER_CONTEXT).apply(expression, testSession(), emptySymbolAllocator(), ImmutableMap.of());
     }
 }

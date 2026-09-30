@@ -5,6 +5,8 @@ In this document you can find information about developing Trino.
 * [Trino organization](#trino-organization)
 * [Trino developer guide](#trino-developer-guide)
 * [Code style](#code-style)
+* [Building](#building)
+* [Branch-scoped local repository](#branch-scoped-local-repository)
 * [Additional IDE configuration](#additional-ide-configuration)
 * [Building docs](#building-docs)
 * [Building the Web UI](#building-the-web-ui)
@@ -187,6 +189,43 @@ Your build may fail if:
 Many such errors may be fixed automatically by running the following:
 `./mvnw sortpom:sort`
 
+## Building
+
+The fastest way to build and install the whole project:
+
+```bash
+./mvnw clean install -T 2C -nsu -DskipTests -Dmaven.javadoc.skip=true -Dair.check.skip-all=true
+```
+
+This builds with two threads per core, skips snapshot update checks, tests, Javadoc, and the
+airbase checks (checkstyle, modernizer, dependency analysis). Run `./mvnw validate` separately
+before opening a PR to get those checks back.
+
+## Branch-scoped local repository
+
+Builds from different branches share `~/.m2/repository` and overwrite each other's installed
+SNAPSHOTs, so a build can silently use jars from another branch. The
+[`branch-scoped-local-repository`](https://github.com/lenaschoenburg/branch-scoped-local-repository)
+extension in [`.mvn/extensions.xml`](../.mvn/extensions.xml) keeps installed artifacts separate per
+branch, so several checkouts or [git worktrees](https://git-scm.com/docs/git-worktree) can build
+and install in parallel without interfering.
+
+It is off by default; enable it per build:
+
+```bash
+./mvnw install -DskipTests -DbranchScopedLocalRepo.enabled=true
+```
+
+Before turning it on:
+
+* Pass the flag on the command line of every build in that checkout. Builds without it see the
+  unscoped artifacts instead.
+* The first build on a branch must be a full `install`, and third-party dependencies are
+  downloaded once more.
+* Worktrees on the same branch are still not isolated from each other.
+* Nothing prunes these artifacts, so delete `~/.m2/repository/installed/<branch>/` once the work on
+  a branch is finished.
+
 ## Additional IDE configuration
 
 When using IntelliJ to develop Trino, we recommend starting with all of the
@@ -262,17 +301,18 @@ the [docs module](../docs).
 
 The Trino Web UI is a React and Vite project located in
 `core/trino-web-ui/src/main/resources/webapp`. You must have
-[Node.js](https://nodejs.org/en/download/) and npm installed to execute these
-commands. Install dependencies with:
+[Bun](https://bun.sh/docs/installation) installed to execute these
+commands. (Maven builds download Bun automatically, so a local install is only
+needed to run these commands by hand.) Install dependencies with:
 
     cd core/trino-web-ui/src/main/resources/webapp
-    npm install
+    bun install
 
 For fast local development, run the `WebUiQueryRunner` class. This starts a
 minimal Trino development server configured with the Web UI. Then start the Vite
 development server:
 
-    npm run dev
+    bun run dev
 
 Open `http://localhost:5173/ui` in your browser. The Vite development server
 provides Hot Module Replacement for quick iteration. By default, requests to
@@ -282,11 +322,11 @@ different backend, update `VITE_BASE_URL` in
 
 To build the Web UI locally, run:
 
-    npm run build
+    bun run build
 
 To run frontend checks, run:
 
-    npm run check
+    bun run check
 
 Maven builds package the Web UI automatically, and Maven verification runs the
 frontend checks.

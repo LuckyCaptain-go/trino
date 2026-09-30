@@ -84,6 +84,7 @@ statement
     | TRUNCATE TABLE qualifiedName                                     #truncateTable
     | COMMENT ON TABLE qualifiedName IS (string | NULL)                #commentTable
     | COMMENT ON VIEW qualifiedName IS (string | NULL)                 #commentView
+    | COMMENT ON MATERIALIZED VIEW qualifiedName IS (string | NULL)    #commentMaterializedView
     | COMMENT ON COLUMN qualifiedName IS (string | NULL)               #commentColumn
     | ALTER TABLE (IF EXISTS)? from=qualifiedName
         RENAME TO to=qualifiedName                                     #renameTable
@@ -126,6 +127,10 @@ statement
         RENAME TO to=qualifiedName                                     #renameMaterializedView
     | ALTER MATERIALIZED VIEW qualifiedName
         SET PROPERTIES propertyAssignments                             #setMaterializedViewProperties
+    | ALTER MATERIALIZED VIEW qualifiedName
+        EXECUTE procedureName=identifier
+        ('(' (argument (',' argument)*)? ')')?
+        (WHERE where=booleanExpression)?                               #materializedViewExecute
     | DROP VIEW (IF EXISTS)? qualifiedName                             #dropView
     | ALTER VIEW from=qualifiedName RENAME TO to=qualifiedName         #renameView
     | ALTER VIEW viewName=qualifiedName REFRESH                        #refreshView
@@ -392,9 +397,34 @@ joinCriteria
     ;
 
 sampledRelation
-    : patternRecognition (
+    : pivot (
         TABLESAMPLE sampleType '(' percentage=expression ')'
       )?
+    ;
+
+pivot
+    : patternRecognition (
+        PIVOT '('
+          pivotAggregation (',' pivotAggregation)*
+          FOR pivotColumns IN '(' pivotValueGroup (',' pivotValueGroup)* ')'
+          (GROUP BY groupBy)?
+        ')'
+        (AS? identifier columnAliases?)?
+      )?
+    ;
+
+pivotAggregation
+    : expression (AS? identifier)?
+    ;
+
+pivotColumns
+    : qualifiedName
+    | '(' qualifiedName (',' qualifiedName)* ')'
+    ;
+
+pivotValueGroup
+    : '(' expression (',' expression)+ ')' (AS? identifier)?
+    | expression (AS? identifier)?
     ;
 
 sampleType
@@ -589,6 +619,7 @@ predicate[ParserRuleContext value]
     | IS NOT? truthValue=(TRUE | FALSE | UNKNOWN)                         #booleanTest
     | IS NOT? DISTINCT FROM right=valueExpression                         #distinctFrom
     | MATCH UNIQUE? matchType=(SIMPLE | PARTIAL | FULL)? '(' query ')'    #match
+    | OVERLAPS right=valueExpression                                      #overlaps
     ;
 
 valueExpression
@@ -631,8 +662,10 @@ primaryExpression
     | ARRAY '[' (expression (',' expression)*)? ']'                                       #arrayConstructor
     | '[' (expression (',' expression)*)? ']'                                             #arrayConstructor
     | value=primaryExpression '[' index=valueExpression ']'                               #subscript
+    | value=primaryExpression '[' ASTERISK ']'                                            #arrayWildcardSubscript
     | identifier                                                                          #columnReference
     | base=primaryExpression '.' fieldName=identifier                                     #dereference
+    | base=primaryExpression '.' stringField=string                                       #stringLiteralDereference
     | name=CURRENT_DATE                                                                   #currentDate
     | name=CURRENT_TIME ('(' precision=INTEGER_VALUE ')')?                                #currentTime
     | name=CURRENT_TIMESTAMP ('(' precision=INTEGER_VALUE ')')?                           #currentTimestamp
@@ -851,6 +884,7 @@ over
 windowFrame
     : (MEASURES measureDefinition (',' measureDefinition)*)?
       frameExtent
+      frameExclusion?
       (AFTER MATCH skipTo)?
       (INITIAL | SEEK)?
       (PATTERN '(' rowPattern ')')?
@@ -865,6 +899,13 @@ frameExtent
     | frameType=RANGE BETWEEN start=frameBound AND end=frameBound
     | frameType=ROWS BETWEEN start=frameBound AND end=frameBound
     | frameType=GROUPS BETWEEN start=frameBound AND end=frameBound
+    ;
+
+frameExclusion
+    : EXCLUDE CURRENT ROW
+    | EXCLUDE GROUP
+    | EXCLUDE TIES
+    | EXCLUDE NO OTHERS
     ;
 
 frameBound
@@ -1073,7 +1114,7 @@ nonReserved
     | BEGIN | BERNOULLI | BOTH | BRANCH | BRANCHES
     | CALL | CALLED | CASCADE | CATALOG | CATALOGS | COLUMN | COLUMNS | COMMENT | COMMIT | COMMITTED | CONDITIONAL | COPARTITION | CORRESPONDING | COUNT | CURRENT
     | DATA | DATE | DAY | DECLARE | DEFAULT | DEFINE | DEFINER | DENY | DESC | DESCRIPTOR | DETERMINISTIC | DISTRIBUTED | DO | DOUBLE
-    | ELSEIF | EMPTY | ENCODING | ERROR | EXCLUDING | EXECUTE | EXPLAIN
+    | ELSEIF | EMPTY | ENCODING | ERROR | EXCLUDE | EXCLUDING | EXECUTE | EXPLAIN
     | FAIL | FAST | FETCH | FILTER | FINAL | FIRST | FOLLOWING | FORMAT | FORWARD | FUNCTION | FUNCTIONS
     | GRACE | GRANT | GRANTED | GRANTS | GRAPHVIZ | GROUPS
     | HOUR
@@ -1083,8 +1124,8 @@ nonReserved
     | LANGUAGE | LAST | LATERAL | LEADING | LEAVE | LEVEL | LIMIT | LOCAL | LOGICAL | LOOP
     | MAP | MATCH | MATCHED | MATCHES | MATCH_RECOGNIZE | MATERIALIZED | MEASURES | MERGE | MINUTE | MONTH
     | NEAREST | NESTED | NEXT | NFC | NFD | NFKC | NFKD | NO | NONE | NULLIF | NULLS
-    | OBJECT | OF | OFFSET | OMIT | ONE | ONLY | OPTION | ORDINALITY | OUTPUT | OVER | OVERFLOW | OVERLAY
-    | PARTIAL | PARTITION | PARTITIONS | PASSING | PAST | PATH | PATTERN | PER | PERIOD | PERMUTE | PLACING | PLAN | POSITION | PRECEDING | PRECISION | PRIVILEGES | PROPERTIES | PRUNE
+    | OBJECT | OF | OFFSET | OMIT | ONE | ONLY | OPTION | ORDINALITY | OTHERS | OUTPUT | OVER | OVERFLOW | OVERLAY
+    | PARTIAL | PARTITION | PARTITIONS | PASSING | PAST | PATH | PATTERN | PER | PERIOD | PERMUTE | PIVOT | PLACING | PLAN | POSITION | PRECEDING | PRECISION | PRIVILEGES | PROPERTIES | PRUNE
     | QUOTES
     | RANGE | READ | REFRESH | RENAME | REPEAT  | REPEATABLE | REPLACE | RESET | RESPECT | RESTRICT | RETURN | RETURNING | RETURNS | REVOKE | ROLE | ROLES | ROLLBACK | ROW | ROWS | RUNNING
     | SCALAR | SCHEMA | SCHEMAS | SECOND | SECURITY | SEEK | SERIALIZABLE | SESSION | SET | SETS
@@ -1176,6 +1217,7 @@ END: 'END';
 ERROR: 'ERROR';
 ESCAPE: 'ESCAPE';
 EXCEPT: 'EXCEPT';
+EXCLUDE: 'EXCLUDE';
 EXCLUDING: 'EXCLUDING';
 EXECUTE: 'EXECUTE';
 EXISTS: 'EXISTS';
@@ -1286,12 +1328,14 @@ OPTION: 'OPTION';
 OR: 'OR';
 ORDER: 'ORDER';
 ORDINALITY: 'ORDINALITY';
+OTHERS: 'OTHERS';
 OUTER: 'OUTER';
 OUTPUT: 'OUTPUT';
 OVER: 'OVER';
 OVERFLOW: 'OVERFLOW';
 OVERLAY: 'OVERLAY';
 PARTIAL: 'PARTIAL';
+OVERLAPS: 'OVERLAPS';
 PARTITION: 'PARTITION';
 PARTITIONS: 'PARTITIONS';
 PASSING: 'PASSING';
@@ -1301,6 +1345,7 @@ PATTERN: 'PATTERN';
 PER: 'PER';
 PERIOD: 'PERIOD';
 PERMUTE: 'PERMUTE';
+PIVOT: 'PIVOT';
 PLACING: 'PLACING';
 PLAN : 'PLAN';
 POSITION: 'POSITION';

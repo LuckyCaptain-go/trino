@@ -32,6 +32,7 @@ import io.trino.sql.tree.AnchorPattern;
 import io.trino.sql.tree.ArithmeticBinaryExpression;
 import io.trino.sql.tree.ArithmeticUnaryExpression;
 import io.trino.sql.tree.Array;
+import io.trino.sql.tree.ArrayWildcardSubscript;
 import io.trino.sql.tree.AssignmentStatement;
 import io.trino.sql.tree.AtLocal;
 import io.trino.sql.tree.AtTimeZone;
@@ -184,6 +185,7 @@ import io.trino.sql.tree.LogicalExpression;
 import io.trino.sql.tree.LongLiteral;
 import io.trino.sql.tree.LoopStatement;
 import io.trino.sql.tree.MatchPredicate;
+import io.trino.sql.tree.MaterializedViewExecute;
 import io.trino.sql.tree.MeasureDefinition;
 import io.trino.sql.tree.Merge;
 import io.trino.sql.tree.MergeCase;
@@ -205,6 +207,7 @@ import io.trino.sql.tree.Offset;
 import io.trino.sql.tree.OneOrMoreQuantifier;
 import io.trino.sql.tree.OrderBy;
 import io.trino.sql.tree.OrdinalityColumn;
+import io.trino.sql.tree.OverlapsPredicate;
 import io.trino.sql.tree.Overlay;
 import io.trino.sql.tree.Parameter;
 import io.trino.sql.tree.ParameterDeclaration;
@@ -218,6 +221,9 @@ import io.trino.sql.tree.PatternRecognitionRelation;
 import io.trino.sql.tree.PatternRecognitionRelation.RowsPerMatch;
 import io.trino.sql.tree.PatternSearchMode;
 import io.trino.sql.tree.PatternVariable;
+import io.trino.sql.tree.Pivot;
+import io.trino.sql.tree.PivotAggregation;
+import io.trino.sql.tree.PivotValueGroup;
 import io.trino.sql.tree.PlanLeaf;
 import io.trino.sql.tree.PlanParentChild;
 import io.trino.sql.tree.PlanSiblings;
@@ -840,6 +846,18 @@ class AstBuilder
     }
 
     @Override
+    public Node visitCommentMaterializedView(SqlBaseParser.CommentMaterializedViewContext context)
+    {
+        Optional<String> comment = Optional.empty();
+
+        if (context.string() != null) {
+            comment = Optional.of(visitString(context.string()).getValue());
+        }
+
+        return new Comment(getLocation(context), Comment.Type.MATERIALIZED_VIEW, getQualifiedName(context.qualifiedName()), comment);
+    }
+
+    @Override
     public Node visitCommentColumn(SqlBaseParser.CommentColumnContext context)
     {
         Optional<String> comment = Optional.empty();
@@ -969,6 +987,22 @@ class AstBuilder
         return new TableExecute(
                 getLocation(context),
                 new Table(getLocation(context.TABLE()), getQualifiedName(context.tableName)),
+                (Identifier) visit(context.procedureName),
+                arguments,
+                visitIfPresent(context.booleanExpression(), Expression.class));
+    }
+
+    @Override
+    public Node visitMaterializedViewExecute(SqlBaseParser.MaterializedViewExecuteContext context)
+    {
+        List<CallArgument> arguments = ImmutableList.of();
+        if (context.argument() != null) {
+            arguments = visit(context.argument(), CallArgument.class);
+        }
+
+        return new MaterializedViewExecute(
+                getLocation(context),
+                new Table(getLocation(context.MATERIALIZED()), getQualifiedName(context.qualifiedName())),
                 (Identifier) visit(context.procedureName),
                 arguments,
                 visitIfPresent(context.booleanExpression(), Expression.class));
@@ -2015,7 +2049,7 @@ class AstBuilder
     @Override
     public Node visitSampledRelation(SqlBaseParser.SampledRelationContext context)
     {
-        Relation child = (Relation) visit(context.patternRecognition());
+        Relation child = (Relation) visit(context.pivot());
 
         if (context.TABLESAMPLE() == null) {
             return child;
@@ -2076,6 +2110,81 @@ class AstBuilder
     public Node visitMeasureDefinition(SqlBaseParser.MeasureDefinitionContext context)
     {
         return new MeasureDefinition(getLocation(context), (Expression) visit(context.expression()), (Identifier) visit(context.identifier()));
+    }
+
+    @Override
+    public Node visitPivot(SqlBaseParser.PivotContext context)
+    {
+        Relation child = (Relation) visit(context.patternRecognition());
+
+        if (context.PIVOT() == null) {
+            return child;
+        }
+
+        List<PivotAggregation> aggregations = visit(context.pivotAggregation(), PivotAggregation.class);
+        List<Expression> pivotColumns = buildPivotColumns(context.pivotColumns());
+        List<PivotValueGroup> valueGroups = visit(context.pivotValueGroup(), PivotValueGroup.class);
+
+        Optional<GroupBy> groupBy = Optional.empty();
+        if (context.GROUP() != null) {
+            groupBy = Optional.of((GroupBy) visit(context.groupBy()));
+        }
+
+        Pivot pivot = new Pivot(getLocation(context), child, aggregations, pivotColumns, valueGroups, groupBy);
+
+        if (context.identifier() == null) {
+            return pivot;
+        }
+
+        List<Identifier> aliases = null;
+        if (context.columnAliases() != null) {
+            aliases = visit(context.columnAliases().identifier(), Identifier.class);
+        }
+
+        return new AliasedRelation(getLocation(context), pivot, (Identifier) visit(context.identifier()), aliases);
+    }
+
+    @Override
+    public Node visitPivotAggregation(SqlBaseParser.PivotAggregationContext context)
+    {
+        Optional<Identifier> alias = Optional.empty();
+        if (context.identifier() != null) {
+            alias = Optional.of((Identifier) visit(context.identifier()));
+        }
+        return new PivotAggregation(getLocation(context), (Expression) visit(context.expression()), alias);
+    }
+
+    @Override
+    public Node visitPivotValueGroup(SqlBaseParser.PivotValueGroupContext context)
+    {
+        Optional<Identifier> alias = Optional.empty();
+        if (context.identifier() != null) {
+            alias = Optional.of((Identifier) visit(context.identifier()));
+        }
+        return new PivotValueGroup(
+                getLocation(context),
+                visit(context.expression(), Expression.class),
+                alias);
+    }
+
+    private List<Expression> buildPivotColumns(SqlBaseParser.PivotColumnsContext context)
+    {
+        // A pivot column is a qualifiedName. The usual way to turn one into an Expression,
+        // DereferenceExpression.from(QualifiedName), builds the nodes from a QualifiedName, which
+        // carries no source locations; the resulting expression would have none either, so an
+        // analyzer error on a pivot column (an unknown name, a type mismatch) would have no
+        // position to point at. Build the column from the located identifiers instead, chaining
+        // them into a DereferenceExpression for a compound name such as t.a.
+        ImmutableList.Builder<Expression> builder = ImmutableList.builder();
+        for (SqlBaseParser.QualifiedNameContext qualifiedNameContext : context.qualifiedName()) {
+            List<Identifier> parts = visit(qualifiedNameContext.identifier(), Identifier.class);
+            Expression column = parts.getFirst();
+            for (Identifier part : parts.subList(1, parts.size())) {
+                column = new DereferenceExpression(getLocation(qualifiedNameContext), column, part);
+            }
+            builder.add(column);
+        }
+        return builder.build();
     }
 
     private static Optional<RowsPerMatch> getRowsPerMatch(SqlBaseParser.RowsPerMatchContext context)
@@ -2344,6 +2453,14 @@ class AstBuilder
     public Node visitDistinctFrom(SqlBaseParser.DistinctFromContext context)
     {
         return new DistinctFromPredicate(getLocation(context), context.NOT() != null, (Expression) visit(context.right));
+    }
+
+    @Override
+    public Node visitOverlaps(SqlBaseParser.OverlapsContext context)
+    {
+        return new OverlapsPredicate(
+                getLocation(context.OVERLAPS()),
+                (Expression) visit(context.right));
     }
 
     @Override
@@ -3034,6 +3151,12 @@ class AstBuilder
     }
 
     @Override
+    public Node visitArrayWildcardSubscript(SqlBaseParser.ArrayWildcardSubscriptContext context)
+    {
+        return new ArrayWildcardSubscript(getLocation(context), (Expression) visit(context.value));
+    }
+
+    @Override
     public Node visitSubqueryExpression(SqlBaseParser.SubqueryExpressionContext context)
     {
         return new SubqueryExpression(getLocation(context), (Query) visit(context.query()));
@@ -3046,6 +3169,19 @@ class AstBuilder
                 getLocation(context),
                 (Expression) visit(context.base),
                 (Identifier) visit(context.fieldName));
+    }
+
+    @Override
+    public Node visitStringLiteralDereference(SqlBaseParser.StringLiteralDereferenceContext context)
+    {
+        // SQL:2023 T863: `<base>.<character string literal>` names a JSON
+        // member whose name is the literal's content. Normalize to a
+        // delimited-identifier dereference so downstream analysis treats it
+        // uniformly with `base."name"` (T861); the case-sensitive,
+        // arbitrary-character member name is preserved verbatim.
+        StringLiteral literal = (StringLiteral) visit(context.stringField);
+        Identifier field = new Identifier(getLocation(context.stringField), literal.getValue(), true);
+        return new DereferenceExpression(getLocation(context), (Expression) visit(context.base), field);
     }
 
     @Override
@@ -3341,11 +3477,17 @@ class AstBuilder
             searchMode = Optional.of(new PatternSearchMode(getLocation(context.SEEK()), SEEK));
         }
 
+        WindowFrame.Exclusion exclusion = WindowFrame.Exclusion.NO_OTHERS;
+        if (context.frameExclusion() != null) {
+            exclusion = getFrameExclusion(context.frameExclusion());
+        }
+
         return new WindowFrame(
                 getLocation(context),
                 getFrameType(context.frameExtent().frameType),
                 (FrameBound) visit(context.frameExtent().start),
                 visitIfPresent(context.frameExtent().end, FrameBound.class),
+                exclusion,
                 visit(context.measureDefinition(), MeasureDefinition.class),
                 visitIfPresent(context.skipTo(), SkipTo.class),
                 searchMode,
@@ -4516,6 +4658,23 @@ class AstBuilder
         };
     }
 
+    private static WindowFrame.Exclusion getFrameExclusion(SqlBaseParser.FrameExclusionContext context)
+    {
+        if (context.CURRENT() != null) {
+            return WindowFrame.Exclusion.CURRENT_ROW;
+        }
+        if (context.GROUP() != null) {
+            return WindowFrame.Exclusion.GROUP;
+        }
+        if (context.TIES() != null) {
+            return WindowFrame.Exclusion.TIES;
+        }
+        if (context.NO() != null) {
+            return WindowFrame.Exclusion.NO_OTHERS;
+        }
+        throw new IllegalArgumentException("Unsupported frame exclusion: " + context.getText());
+    }
+
     private static FrameBound.Type getBoundedFrameBoundType(Token token)
     {
         return switch (token.getType()) {
@@ -4633,8 +4792,8 @@ class AstBuilder
         requireNonNull(token, "token is null");
         return baseLocation
                 .map(location -> new NodeLocation(
-                        token.getLine() + location.getLineNumber() - 1,
-                        token.getCharPositionInLine() + 1 + (token.getLine() == 1 ? location.getColumnNumber() : 0)))
+                        token.getLine() + location.line() - 1,
+                        token.getCharPositionInLine() + 1 + (token.getLine() == 1 ? location.column() : 0)))
                 .orElse(new NodeLocation(token.getLine(), token.getCharPositionInLine() + 1));
     }
 

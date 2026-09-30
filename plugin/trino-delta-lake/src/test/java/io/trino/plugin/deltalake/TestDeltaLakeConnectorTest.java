@@ -811,7 +811,14 @@ public class TestDeltaLakeConnectorTest
                 .isReplacedWithEmptyValues();
 
         assertThat(query("SELECT * FROM " + tableName + " WHERE date_trunc('week', part) >= TIMESTAMP '2005-09-10 00:00:00.000 +00:00'"))
-                .isNotFullyPushedDown(FilterNode.class);
+                .isFullyPushedDown()
+                .matches("VALUES " +
+                        "(3, TIMESTAMP '2023-11-21 07:19:00.000 UTC')");
+
+        assertThat(query("SELECT * FROM " + tableName + " WHERE date_trunc('quarter', part) = TIMESTAMP '2005-07-01 00:00:00.000 +00:00'"))
+                .isFullyPushedDown()
+                .matches("VALUES " +
+                        "(4, TIMESTAMP '2005-09-10 13:00:00.000 UTC')");
 
         // cast timestamp_tz as DATE optimization
         assertThat(query("SELECT * FROM " + tableName + " WHERE cast(part AS date) >= DATE '2005-09-10'"))
@@ -1305,6 +1312,31 @@ public class TestDeltaLakeConnectorTest
                     .hasSize(2)
                     .doesNotContainAnyElementsOf(initialFiles);
         }
+    }
+
+    @Test
+    public void testOptimizeWritesCheckpointWithNonFiniteStatistics()
+    {
+        String tableName = "test_optimize_checkpoint_non_finite_" + randomNameSuffix();
+
+        assertUpdate("CREATE TABLE " + tableName + " (a_double double, a_real real)");
+        String deltaLog = getTableLocation(tableName).replaceFirst("s3://" + bucketName + "/", "") + "/_delta_log";
+        assertUpdate("INSERT INTO " + tableName + " VALUES (infinity(), -infinity()), (-infinity(), nan())", 2);
+        assertUpdate("INSERT INTO " + tableName + " VALUES (nan(), infinity()), (1.5, 2.5)", 2);
+
+        // OPTIMIZE always writes a checkpoint
+        assertUpdate("ALTER TABLE " + tableName + " EXECUTE optimize");
+        assertThat(floci.listObjects(bucketName, deltaLog)).contains(deltaLog + "/00000000000000000003.checkpoint.parquet");
+
+        assertThat(query("SELECT a_double, a_real FROM " + tableName + " WHERE a_double = infinity()"))
+                .matches("VALUES (infinity(), REAL '-Infinity')");
+        assertThat(query("SELECT a_double, a_real FROM " + tableName + " WHERE a_double = -infinity()"))
+                .matches("VALUES (-infinity(), REAL 'NaN')");
+        assertThat(query("SELECT a_double, a_real FROM " + tableName + " WHERE a_real = infinity()"))
+                .matches("VALUES (nan(), REAL 'Infinity')");
+        assertQuery("SELECT count(*) FROM " + tableName, "VALUES 4");
+
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test

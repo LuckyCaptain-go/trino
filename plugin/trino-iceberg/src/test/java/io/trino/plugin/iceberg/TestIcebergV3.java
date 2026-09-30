@@ -13,10 +13,6 @@
  */
 package io.trino.plugin.iceberg;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.json.JsonMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.filesystem.Location;
@@ -26,6 +22,8 @@ import io.trino.parquet.metadata.ParquetMetadata;
 import io.trino.plugin.geospatial.GeoPlugin;
 import io.trino.plugin.hive.HivePlugin;
 import io.trino.plugin.iceberg.catalog.TrinoCatalog;
+import io.trino.plugin.iceberg.encryption.DefaultEncryptionManagerFactory;
+import io.trino.plugin.iceberg.encryption.EncryptionManagerFactory;
 import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.testing.AbstractTestQueryFramework;
@@ -61,7 +59,6 @@ import org.apache.iceberg.types.Types.GeometryType;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -72,15 +69,13 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static com.google.common.collect.Iterables.getOnlyElement;
-import static com.google.common.io.MoreFiles.deleteRecursively;
-import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
+import static com.google.inject.multibindings.OptionalBinder.newOptionalBinder;
 import static io.trino.plugin.iceberg.IcebergQueryRunner.ICEBERG_CATALOG;
 import static io.trino.plugin.iceberg.IcebergTestUtils.SESSION;
 import static io.trino.plugin.iceberg.IcebergTestUtils.getFileSystemFactory;
 import static io.trino.plugin.iceberg.IcebergTestUtils.getHiveMetastore;
 import static io.trino.plugin.iceberg.IcebergTestUtils.getParquetFileMetadata;
 import static io.trino.plugin.iceberg.IcebergTestUtils.getTrinoCatalog;
-import static io.trino.plugin.iceberg.IcebergUtil.getLatestMetadataLocation;
 import static io.trino.plugin.iceberg.util.EqualityDeleteUtils.writeEqualityDeleteForTable;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.testing.TestingNames.randomNameSuffix;
@@ -89,7 +84,6 @@ import static org.apache.iceberg.TableProperties.FORMAT_VERSION;
 import static org.apache.parquet.schema.LogicalTypeAnnotation.geometryType;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.keycloak.util.JsonSerialization.mapper;
 
 public class TestIcebergV3
         extends AbstractTestQueryFramework
@@ -120,7 +114,12 @@ public class TestIcebergV3
         dataDirectory = queryRunner.getCoordinator().getBaseDataDir().resolve("iceberg_data");
         dataDirectory.toFile().mkdirs();
 
-        queryRunner.installPlugin(new TestingIcebergPlugin(dataDirectory));
+        queryRunner.installPlugin(new TestingIcebergPlugin(
+                dataDirectory,
+                Optional::empty,
+                () -> Optional.of(binder -> newOptionalBinder(binder, EncryptionManagerFactory.class)
+                        .setBinding()
+                        .toInstance(new DefaultEncryptionManagerFactory(Optional.of(new TestingFileMetastoreKeyManagementClient()))))));
         queryRunner.createCatalog(ICEBERG_CATALOG, "iceberg", ImmutableMap.of(
                 "iceberg.catalog.type", "TESTING_FILE_METASTORE",
                 "iceberg.format-version", "3",
@@ -1250,7 +1249,7 @@ public class TestIcebergV3
     }
 
     @Test
-    void testV3RejectsEncryptionKeyProperty()
+    void testV3AllowsEncryptionKeyPropertyForReads()
     {
         String tableName = "test_v3_encryption_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (id INTEGER) WITH (format = 'ORC', format_version = 3)");
@@ -1262,63 +1261,10 @@ public class TestIcebergV3
                 .set("encryption.key-id", "test_key")
                 .commit();
 
-        assertQueryFails(
-                "SELECT * FROM " + tableName,
-                ".*Iceberg table encryption is not supported.*");
+        assertThat(query("SELECT * FROM " + tableName))
+                .matches("VALUES 1");
 
-        // Also verify INSERT fails with encryption key set
-        assertQueryFails(
-                "INSERT INTO " + tableName + " VALUES 2",
-                ".*Iceberg table encryption is not supported.*");
-
-        // Clean up by removing the property first
-        icebergTable.updateProperties()
-                .remove("encryption.key-id")
-                .commit();
         assertUpdate("DROP TABLE " + tableName);
-    }
-
-    @Test
-    void testV3RejectsEncryptionKeysInMetadata()
-            throws Exception
-    {
-        String temp = "tmp_v3_encryption_src_" + randomNameSuffix();
-        assertUpdate("CREATE TABLE " + temp + " (id INTEGER) WITH (format = 'ORC')");
-        assertUpdate("INSERT INTO " + temp + " VALUES 1", 1);
-        Table tempTable = loadTable(temp);
-
-        String hadoopTableName = "hadoop_v3_encryption_" + randomNameSuffix();
-        Path hadoopTableLocation = Path.of(tempTable.location()).resolveSibling(hadoopTableName);
-
-        // Use HadoopTables to prevent stale caches from direct metadata.json modification
-        Table icebergTable = HADOOP_TABLES.create(
-                new Schema(Types.NestedField.optional(1, "id", Types.IntegerType.get())),
-                PartitionSpec.unpartitioned(),
-                SortOrder.unsorted(),
-                ImmutableMap.of(
-                        "format-version", "3",
-                        "write.format.default", "ORC"),
-                hadoopTableLocation.toString());
-
-        icebergTable.newFastAppend()
-                .appendFile(getOnlyElement(SnapshotChanges.builderFor(tempTable).build().addedDataFiles()))
-                .commit();
-
-        // Inject encryption-keys + snapshot key-id into the current metadata.json.
-        injectEncryptionKeysIntoMetadataJson(hadoopTableLocation, "k1");
-
-        String registered = "registered_v3_encryption_" + randomNameSuffix();
-        assertUpdate("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')"
-                .formatted(registered, hadoopTableLocation));
-
-        assertQueryFails(
-                "SELECT * FROM " + registered,
-                ".*Iceberg table encryption is not supported.*");
-
-        // Use unregister_table instead of DROP TABLE because DROP TABLE triggers the same validation error
-        assertUpdate("CALL system.unregister_table(CURRENT_SCHEMA, '%s')".formatted(registered));
-        assertUpdate("DROP TABLE " + temp);
-        deleteRecursively(hadoopTableLocation, ALLOW_INSECURE);
     }
 
     @Test
@@ -1500,23 +1446,114 @@ public class TestIcebergV3
             assertThat(query("SELECT sum(record_count), count(*), count_if(file_format = 'PUFFIN'), count(distinct file_path) FROM \"" + table.getName() + "$files\" WHERE content = 1"))
                     .matches("VALUES (BIGINT '600', BIGINT '70', BIGINT '70', BIGINT '2')");
 
-            // delete odds => 400 rows removed
+            // delete odds => 400 rows removed; every data file is now fully deleted
             assertUpdate("DELETE FROM " + table.getName() + " WHERE id % 2 = 1", 400);
 
             // verify delete
             assertThat(query("SELECT count(*) FROM " + table.getName()))
                     .matches("VALUES (BIGINT '0')");
 
-            // Check DV via $files again: cardinality 1000, PUFFIN delete entry for each data file, only 1 puffin file since all rows are now deleted
-            assertThat(query("SELECT sum(record_count), count(*), count_if(file_format = 'PUFFIN'), count(distinct file_path) FROM \"" + table.getName() + "$files\" WHERE content = 1"))
-                    .matches("VALUES (BIGINT '1000', BIGINT '70', BIGINT '70', BIGINT '1')");
+            // Fully-deleted data files are dropped (metadata delete) instead of getting a DV, so no data or delete files remain
+            assertThat(query("SELECT count(*) FROM \"" + table.getName() + "$files\" WHERE content = 0"))
+                    .matches("VALUES (BIGINT '0')");
+            assertThat(query("SELECT count(*) FROM \"" + table.getName() + "$files\" WHERE content = 1"))
+                    .matches("VALUES (BIGINT '0')");
 
             // re-insert 100 rows
             assertUpdate("INSERT INTO " + table.getName() + " SELECT x FROM UNNEST(sequence(1, 100)) t(x)", 100);
             assertThat(query("SELECT count(*), min(id), max(id) FROM " + table.getName()))
                     .matches("VALUES (BIGINT '100', INTEGER '1', INTEGER '100')");
-            assertThat(query("SELECT sum(record_count), count(*), count_if(file_format = 'PUFFIN'), count(distinct file_path) FROM \"" + table.getName() + "$files\" WHERE content = 1"))
-                    .matches("VALUES (BIGINT '1000', BIGINT '70', BIGINT '70', BIGINT '1')");
+            assertThat(query("SELECT count(*) FROM \"" + table.getName() + "$files\" WHERE content = 1"))
+                    .matches("VALUES (BIGINT '0')");
+        }
+    }
+
+    @Test
+    void testFullyDeletedDataFileIsDroppedInsteadOfWritingDeletionVector()
+    {
+        try (TestTable table = newTrinoTable("test_full_delete_v3", "(id INTEGER) WITH (format = 'PARQUET', format_version = 3)")) {
+            // First file: rows 1..100. Second file: rows 101..200.
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT x FROM UNNEST(sequence(1, 100)) t(x)", 100);
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT x FROM UNNEST(sequence(101, 200)) t(x)", 100);
+            assertThat(query("SELECT count(*) FROM \"" + table.getName() + "$files\" WHERE content = 0"))
+                    .matches("VALUES (BIGINT '2')");
+
+            // Delete every row of the first file only, in a single statement; the second file is untouched.
+            assertUpdate("DELETE FROM " + table.getName() + " WHERE id <= 100", 100);
+            assertThat(query("SELECT count(*), min(id), max(id) FROM " + table.getName()))
+                    .matches("VALUES (BIGINT '100', INTEGER '101', INTEGER '200')");
+
+            // The fully-deleted data file is dropped: only one data file remains and no DV was written for it.
+            assertThat(query("SELECT count(*) FROM \"" + table.getName() + "$files\" WHERE content = 0"))
+                    .matches("VALUES (BIGINT '1')");
+            assertThat(query("SELECT count(*) FROM \"" + table.getName() + "$files\" WHERE content = 1"))
+                    .matches("VALUES (BIGINT '0')");
+        }
+    }
+
+    @Test
+    void testFullyDeletedDataFileAcrossTwoCommitsIsDropped()
+    {
+        try (TestTable table = newTrinoTable("test_full_delete_merge_v3", "(id INTEGER) WITH (format = 'PARQUET', format_version = 3)")) {
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT x FROM UNNEST(sequence(1, 100)) t(x)", 100);
+
+            // Partial delete: creates a DV, data file remains.
+            assertUpdate("DELETE FROM " + table.getName() + " WHERE id <= 50", 50);
+            assertThat(query("SELECT count(*) FROM \"" + table.getName() + "$files\" WHERE content = 0"))
+                    .matches("VALUES (BIGINT '1')");
+            assertThat(query("SELECT count(*) FROM \"" + table.getName() + "$files\" WHERE content = 1"))
+                    .matches("VALUES (BIGINT '1')");
+
+            // Delete the remaining rows in a separate commit; merged deletes (old DV + new) now cover the whole file.
+            assertUpdate("DELETE FROM " + table.getName() + " WHERE id > 50", 50);
+            assertThat(query("SELECT count(*) FROM " + table.getName()))
+                    .matches("VALUES (BIGINT '0')");
+
+            // The data file and its old DV are both gone; nothing references the dropped file any more.
+            assertThat(query("SELECT count(*) FROM \"" + table.getName() + "$files\" WHERE content = 0"))
+                    .matches("VALUES (BIGINT '0')");
+            assertThat(query("SELECT count(*) FROM \"" + table.getName() + "$files\" WHERE content = 1"))
+                    .matches("VALUES (BIGINT '0')");
+        }
+    }
+
+    @Test
+    void testFullyDeletedDataFileViaUpdateIsDropped()
+    {
+        try (TestTable table = newTrinoTable("test_full_update_delete_v3", "(id INTEGER, v VARCHAR) WITH (format = 'PARQUET', format_version = 3)")) {
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT x, 'a' FROM UNNEST(sequence(1, 100)) t(x)", 100);
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT x, 'a' FROM UNNEST(sequence(101, 200)) t(x)", 100);
+
+            // UPDATE that matches every row of the first file only (UPDATE = delete + insert under the hood).
+            assertUpdate("UPDATE " + table.getName() + " SET v = 'b' WHERE id <= 100", 100);
+            assertThat(query("SELECT count(*), count_if(v = 'b'), count_if(v = 'a') FROM " + table.getName()))
+                    .matches("VALUES (BIGINT '200', BIGINT '100', BIGINT '100')");
+
+            // The original first file (now fully superseded) is dropped rather than paired with a full-coverage DV.
+            assertThat(query("SELECT count(*) FROM \"" + table.getName() + "$files\" WHERE content = 1"))
+                    .matches("VALUES (BIGINT '0')");
+        }
+    }
+
+    @Test
+    void testFullyDeletedDataFileViaMergeIsDropped()
+    {
+        try (TestTable table = newTrinoTable("test_full_merge_delete_v3", "(id INTEGER) WITH (format = 'PARQUET', format_version = 3)")) {
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT x FROM UNNEST(sequence(1, 100)) t(x)", 100);
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT x FROM UNNEST(sequence(101, 200)) t(x)", 100);
+
+            // MERGE that deletes every row of the first file only.
+            assertUpdate(
+                    "MERGE INTO " + table.getName() + " t USING (SELECT * FROM UNNEST(sequence(1, 100)) s(id)) s ON (t.id = s.id) " +
+                            "WHEN MATCHED THEN DELETE",
+                    100);
+            assertThat(query("SELECT count(*), min(id), max(id) FROM " + table.getName()))
+                    .matches("VALUES (BIGINT '100', INTEGER '101', INTEGER '200')");
+
+            assertThat(query("SELECT count(*) FROM \"" + table.getName() + "$files\" WHERE content = 0"))
+                    .matches("VALUES (BIGINT '1')");
+            assertThat(query("SELECT count(*) FROM \"" + table.getName() + "$files\" WHERE content = 1"))
+                    .matches("VALUES (BIGINT '0')");
         }
     }
 
@@ -1559,14 +1596,15 @@ public class TestIcebergV3
             assertThat(query("SELECT count_if(file_format <> 'PUFFIN') > 0, count_if(file_format = 'PUFFIN') > 0 FROM \"" + table.getName() + "$files\" WHERE content = 1"))
                     .matches("VALUES (true, true)");
 
-            // delete remaining rows
+            // delete remaining rows; every data file is now fully deleted and dropped, so no new DV is written
             assertUpdate("DELETE FROM " + table.getName() + " WHERE id % 3 > 0", 533);
             assertThat(query("SELECT count(*) FROM " + table.getName()))
                     .matches("VALUES (BIGINT '0')");
 
-            // We still have both legacy delete files because they are shared across multiple files (not single-file position deletes)
+            // The legacy partition-scoped delete file lingers (it is never removed on its own), but no Puffin file
+            // remains since all data files were dropped instead of getting a full-coverage deletion vector
             assertThat(query("SELECT count_if(file_format <> 'PUFFIN') > 0, count_if(file_format = 'PUFFIN') > 0 FROM \"" + table.getName() + "$files\" WHERE content = 1"))
-                    .matches("VALUES (true, true)");
+                    .matches("VALUES (true, false)");
         }
     }
 
@@ -1604,44 +1642,6 @@ public class TestIcebergV3
             assertThat(query("SELECT count(*), count_if(grp = 0), count_if(grp = 1), count_if(id % 10 = 0) FROM " + table.getName()))
                     .matches("VALUES (BIGINT '70', BIGINT '10', BIGINT '0', BIGINT '0')");
         }
-    }
-
-    private void injectEncryptionKeysIntoMetadataJson(Path tableLocation, String keyId)
-            throws IOException
-    {
-        Path metadataFile = Path.of(getLatestMetadataLocation(fileSystemFactory.create(SESSION), tableLocation.toString()));
-
-        JsonMapper jsonMapper = new JsonMapper();
-        ObjectNode root = (ObjectNode) jsonMapper.readTree(metadataFile.toFile());
-
-        // Add "encryption-keys" - any valid base64 is fine for this test; we only care that Iceberg parses it.
-        ObjectNode key = mapper.createObjectNode();
-        key.put("key-id", keyId);
-        key.put("encrypted-key-metadata", "AA==");
-        ArrayNode keys = mapper.createArrayNode();
-        keys.add(key);
-        root.set("encryption-keys", keys);
-
-        // Set current snapshot's "key-id"
-        JsonNode currentSnapshotIdNode = root.get("current-snapshot-id");
-        if (currentSnapshotIdNode != null && currentSnapshotIdNode.isNumber()) {
-            long currentSnapshotId = currentSnapshotIdNode.asLong();
-            ArrayNode snapshots = (ArrayNode) root.get("snapshots");
-            if (snapshots != null) {
-                for (JsonNode snapshotNode : snapshots) {
-                    JsonNode snapshotIdNode = snapshotNode.get("snapshot-id");
-                    if (snapshotIdNode != null && snapshotIdNode.asLong() == currentSnapshotId) {
-                        ((ObjectNode) snapshotNode).put("key-id", keyId);
-                        break;
-                    }
-                }
-            }
-        }
-
-        Files.writeString(metadataFile, mapper.writeValueAsString(root));
-        // delete the crc file, since it is no longer valid
-        Path crc = metadataFile.resolveSibling("." + metadataFile.getFileName() + ".crc");
-        Files.deleteIfExists(crc);
     }
 
     @Test
@@ -1691,7 +1691,7 @@ public class TestIcebergV3
     {
         BaseTable table = loadTable(tableName);
         table.refresh();
-        DataFile dataFile = getOnlyElement(table.currentSnapshot().addedDataFiles(table.io()));
+        DataFile dataFile = getOnlyElement(SnapshotChanges.builderFor(table).build().addedDataFiles());
         return getParquetFileMetadata(fileSystemFactory.create(SESSION).newInputFile(Location.of(dataFile.location())));
     }
 
@@ -1748,10 +1748,10 @@ public class TestIcebergV3
                 .matches("VALUES (VARCHAR 'id', VARCHAR 'integer', VARCHAR '', VARCHAR ''), " +
                         "(VARCHAR 'geom', VARCHAR 'Geometry', VARCHAR '', VARCHAR '')");
 
-        assertUpdate("INSERT INTO " + registered + " VALUES (1, ST_SetSRID(ST_Point(1, 2), 3857))", 1);
+        assertUpdate("INSERT INTO " + registered + " VALUES (1, ST_SetSRID(ST_GeometryFromText('POINT Z (1 2 3)'), 3857))", 1);
 
-        assertThat(query("SELECT ST_AsText(geom), ST_SRID(geom) FROM " + registered))
-                .matches("VALUES (VARCHAR 'POINT (1 2)', 3857)");
+        assertThat(query("SELECT ST_AsEWKT(geom) FROM " + registered))
+                .matches("VALUES VARCHAR 'SRID=3857;POINT Z (1 2 3)'");
 
         assertThat(getOnlyParquetDataFileMetadata(registered).getFileMetaData().getSchema().getType("geom").asPrimitiveType().getLogicalTypeAnnotation())
                 .isEqualTo(geometryType("EPSG:3857"));
@@ -1766,16 +1766,13 @@ public class TestIcebergV3
             try (TestTable table = newTrinoTable(
                     "test_geometry_roundtrip_" + format.toLowerCase(Locale.ROOT) + "_",
                     "(id INTEGER, geom geometry) WITH (format = '" + format + "', format_version = 3)")) {
-                assertUpdate("INSERT INTO " + table.getName() + " VALUES (1, ST_Point(1.0, 2.0))", 1);
+                assertUpdate("INSERT INTO " + table.getName() + " VALUES (1, ST_GeometryFromText('POINT Z (1 2 3)'))", 1);
                 assertUpdate("INSERT INTO " + table.getName() + " VALUES (2, ST_GeometryFromText('POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))'))", 1);
 
-                assertThat(query("SELECT id, ST_AsText(geom) FROM " + table.getName() + " ORDER BY id"))
-                        .matches("VALUES (1, VARCHAR 'POINT (1 2)'), (2, VARCHAR 'POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))')");
-
-                assertThat(query("SELECT ST_SRID(geom) FROM " + table.getName() + " WHERE id = 1"))
-                        .matches("VALUES 4326");
-                assertThat(query("SELECT ST_SRID(geom) FROM " + table.getName() + " WHERE id = 2"))
-                        .matches("VALUES 4326");
+                assertThat(query("SELECT id, ST_AsEWKT(geom) FROM " + table.getName() + " ORDER BY id"))
+                        .matches("VALUES " +
+                                "(1, VARCHAR 'SRID=4326;POINT Z (1 2 3)'), " +
+                                "(2, VARCHAR 'SRID=4326;POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))')");
             }
         }
     }
@@ -1792,10 +1789,10 @@ public class TestIcebergV3
                             "(1, " + container.firstValue() + "), " +
                             "(2, " + container.secondValue() + ")", 2);
 
-                    assertThat(query("SELECT id, ST_AsText(" + container.geometryExpression() + "), ST_SRID(" + container.geometryExpression() + ") FROM " + table.getName() + " ORDER BY id"))
+                    assertThat(query("SELECT id, ST_AsEWKT(" + container.geometryExpression() + ") FROM " + table.getName() + " ORDER BY id"))
                             .matches("VALUES " +
-                                    "(1, VARCHAR 'POINT (1 2)', 4326), " +
-                                    "(2, VARCHAR 'POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', 4326)");
+                                    "(1, VARCHAR 'SRID=4326;POINT Z (1 2 3)'), " +
+                                    "(2, VARCHAR 'SRID=4326;POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))')");
                 }
             }
         }
@@ -1807,19 +1804,19 @@ public class TestIcebergV3
                 new NestedGeometryContainer(
                         "row",
                         "ROW(geom geometry)",
-                        "CAST(ROW(ST_Point(1.0, 2.0)) AS ROW(geom geometry))",
+                        "CAST(ROW(ST_GeometryFromText('POINT Z (1 2 3)')) AS ROW(geom geometry))",
                         "CAST(ROW(ST_GeometryFromText('POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))')) AS ROW(geom geometry))",
                         "payload.geom"),
                 new NestedGeometryContainer(
                         "array",
                         "ARRAY(geometry)",
-                        "ARRAY[ST_Point(1.0, 2.0)]",
+                        "ARRAY[ST_GeometryFromText('POINT Z (1 2 3)')]",
                         "ARRAY[ST_GeometryFromText('POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))')]",
                         "payload[1]"),
                 new NestedGeometryContainer(
                         "map",
                         "MAP(VARCHAR, geometry)",
-                        "map(ARRAY['geom'], ARRAY[ST_Point(1.0, 2.0)])",
+                        "map(ARRAY['geom'], ARRAY[ST_GeometryFromText('POINT Z (1 2 3)')])",
                         "map(ARRAY['geom'], ARRAY[ST_GeometryFromText('POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))')])",
                         "payload['geom']"));
     }
@@ -1928,10 +1925,10 @@ public class TestIcebergV3
         assertUpdate("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')"
                 .formatted(registered, hadoopTableLocation));
 
-        assertUpdate("INSERT INTO " + registered + " VALUES (1, ST_SetSRID(ST_Point(1, 2), 3857))", 1);
+        assertUpdate("INSERT INTO " + registered + " VALUES (1, ST_SetSRID(ST_GeometryFromText('POINT Z (1 2 3)'), 3857))", 1);
 
-        assertThat(query("SELECT ST_AsText(geom), ST_SRID(geom) FROM " + registered))
-                .matches("VALUES (VARCHAR 'POINT (1 2)', 3857)");
+        assertThat(query("SELECT ST_AsEWKT(geom) FROM " + registered))
+                .matches("VALUES VARCHAR 'SRID=3857;POINT Z (1 2 3)'");
 
         assertUpdate("DROP TABLE " + registered);
     }

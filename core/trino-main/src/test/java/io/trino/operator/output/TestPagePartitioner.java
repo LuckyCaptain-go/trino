@@ -508,17 +508,18 @@ public class TestPagePartitioner
     }
 
     @Test
-    public void testOutputForOneValueDictionaryBlock()
+    public void testOutputForSingleEntryDictionary()
     {
-        testOutputForOneValueDictionaryBlock(PartitioningMode.ROW_WISE);
-        testOutputForOneValueDictionaryBlock(PartitioningMode.COLUMNAR);
+        testOutputForSingleEntryDictionary(PartitioningMode.ROW_WISE);
+        testOutputForSingleEntryDictionary(PartitioningMode.COLUMNAR);
     }
 
-    private void testOutputForOneValueDictionaryBlock(PartitioningMode partitioningMode)
+    private void testOutputForSingleEntryDictionary(PartitioningMode partitioningMode)
     {
         TestOutputBuffer outputBuffer = new TestOutputBuffer();
         PagePartitioner multiPartitionPartitioner = pagePartitioner(outputBuffer, BIGINT).build();
         Page page = new Page(DictionaryBlock.create(4, createLongsBlock(0), new int[] {0, 0, 0, 0}));
+        assertThat(page.getBlock(0)).isInstanceOf(RunLengthEncodedBlock.class);
 
         processPages(multiPartitionPartitioner, partitioningMode, page);
 
@@ -668,16 +669,16 @@ public class TestPagePartitioner
         Page page = new Page(createLongsBlock(1, 1, 1, 1, 1, 1));
 
         pagePartitioner.partitionPage(page, operatorContext);
-        assertThat(operatorContext.getOutputDataSize().getTotalCount()).isEqualTo(0);
+        assertThat(operatorContext.getOutputDataSize()).isEqualTo(0);
         pagePartitioner.prepareForRelease(operatorContext);
-        assertThat(operatorContext.getOutputDataSize().getTotalCount()).isEqualTo(page.getSizeInBytes());
+        assertThat(operatorContext.getOutputDataSize()).isEqualTo(page.getSizeInBytes());
         // release again with no additional input, size should not change
         pagePartitioner.prepareForRelease(operatorContext);
-        assertThat(operatorContext.getOutputDataSize().getTotalCount()).isEqualTo(page.getSizeInBytes());
+        assertThat(operatorContext.getOutputDataSize()).isEqualTo(page.getSizeInBytes());
 
         pagePartitioner.partitionPage(page, operatorContext);
         pagePartitioner.prepareForRelease(operatorContext);
-        assertThat(operatorContext.getOutputDataSize().getTotalCount()).isEqualTo(page.getSizeInBytes() * 2);
+        assertThat(operatorContext.getOutputDataSize()).isEqualTo(page.getSizeInBytes() * 2);
 
         pagePartitioner.close();
         List<Slice> output = outputBuffer.getEnqueued();

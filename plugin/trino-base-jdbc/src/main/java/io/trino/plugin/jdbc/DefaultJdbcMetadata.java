@@ -868,7 +868,7 @@ public class DefaultJdbcMetadata
                     .build();
         }
 
-        int maxColumnNameLength = optionalMaxColumnNameLength.getAsInt();
+        int maxColumnNameLength = optionalMaxColumnNameLength.orElseThrow();
         int nextSyntheticColumnIdLength = String.valueOf(nextSyntheticColumnId).length();
         verify(maxColumnNameLength >= nextSyntheticColumnIdLength, "Maximum allowed column name length is %s but next synthetic id has length %s", maxColumnNameLength, nextSyntheticColumnIdLength);
 
@@ -937,7 +937,7 @@ public class DefaultJdbcMetadata
             return Optional.empty();
         }
 
-        if (handle.getLimit().isPresent() && handle.getLimit().getAsLong() <= limit) {
+        if (handle.getLimit().isPresent() && handle.getLimit().orElseThrow() <= limit) {
             return Optional.empty();
         }
 
@@ -1352,7 +1352,7 @@ public class DefaultJdbcMetadata
     }
 
     @Override
-    public void finishMerge(
+    public Optional<ConnectorOutputMetadata> finishMerge(
             ConnectorSession session,
             ConnectorMergeTableHandle tableHandle,
             List<ConnectorTableHandle> sourceTableHandles,
@@ -1362,6 +1362,7 @@ public class DefaultJdbcMetadata
         JdbcMergeTableHandle handle = (JdbcMergeTableHandle) tableHandle;
 
         jdbcClient.finishMerge(session, handle, getSuccessfulPageSinkIds(fragments));
+        return Optional.empty();
     }
 
     @Override

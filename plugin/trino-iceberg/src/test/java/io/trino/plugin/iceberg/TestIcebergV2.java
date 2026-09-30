@@ -65,7 +65,6 @@ import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
-import org.apache.iceberg.data.parquet.GenericParquetWriter;
 import org.apache.iceberg.data.parquet.InternalWriter;
 import org.apache.iceberg.deletes.PositionDelete;
 import org.apache.iceberg.deletes.PositionDeleteWriter;
@@ -261,6 +260,19 @@ public class TestIcebergV2
     }
 
     @Test
+    public void testPositionDeletesAfterPartitionSpecEvolution()
+    {
+        try (TestTable table = newTrinoTable("test_position_deletes_after_partition_evolution_", "WITH (partitioning = ARRAY['regionkey']) AS SELECT * FROM tpch.tiny.nation")) {
+            assertUpdate("ALTER TABLE " + table.getName() + " SET PROPERTIES partitioning = ARRAY['bucket(name, 4)']");
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (25, 'ATLANTIS', 0, 'mythical')", 1);
+            // Deletes rows from data files written under both the previous and the current partition spec
+            assertUpdate("DELETE FROM " + table.getName() + " WHERE name LIKE 'A%'", 3);
+            assertQuery("SELECT count(*) FROM " + table.getName(), "VALUES 23");
+            assertQuery("SELECT count(*) FROM \"" + table.getName() + "$files\" WHERE content = " + POSITION_DELETES.id(), "VALUES 3");
+        }
+    }
+
+    @Test
     public void testV2TableWithPositionDelete()
             throws Exception
     {
@@ -273,15 +285,12 @@ public class TestIcebergV2
             FileIO fileIo = FILE_IO_FACTORY.create(fileSystemFactory.create(SESSION));
 
             PositionDeleteWriter<Record> writer = Parquet.writeDeletes(fileIo.newOutputFile("local:///delete_file_" + UUID.randomUUID()))
-                    .createWriterFunc(GenericParquetWriter::create)
-                    .forTable(icebergTable)
                     .overwrite()
-                    .rowSchema(icebergTable.schema())
                     .withSpec(PartitionSpec.unpartitioned())
                     .buildPositionWriter();
 
             PositionDelete<Record> positionDelete = PositionDelete.create();
-            PositionDelete<Record> record = positionDelete.set(dataFilePath, 0, GenericRecord.create(icebergTable.schema()));
+            PositionDelete<Record> record = positionDelete.set(dataFilePath, 0);
             try (Closeable ignored = writer) {
                 writer.write(record);
             }
@@ -737,6 +746,52 @@ public class TestIcebergV2
                     .matches("VALUES (BIGINT '10', VARCHAR '')");
             assertThat(query("SELECT \"$partition\", root.nested FROM " + tableName))
                     .matches("VALUES (VARCHAR '', BIGINT '10')");
+        }
+    }
+
+    @Test
+    public void testEqualityDeletesWithStructColumnAsKey()
+            throws Exception
+    {
+        try (TestTable table = newTrinoTable("test_equality_deletes_struct_key_", "(id BIGINT, root ROW(a VARCHAR, b VARCHAR, c VARCHAR))")) {
+            String tableName = table.getName();
+            assertUpdate("INSERT INTO " + tableName + " VALUES (1, row('x1', 'y1', 'z1'))", 1);
+            assertUpdate("INSERT INTO " + tableName + " VALUES (2, row('x2', 'y2', 'z2'))", 1);
+            assertUpdate("INSERT INTO " + tableName + " VALUES (3, row('x3', 'y3', 'z3'))", 1);
+            Table icebergTable = loadTable(tableName);
+            assertThat(icebergTable.currentSnapshot().summary()).containsEntry("total-equality-deletes", "0");
+
+            List<String> deleteFileColumns = ImmutableList.of("root");
+            Schema deleteRowSchema = icebergTable.schema().select(deleteFileColumns);
+            List<Integer> equalityFieldIds = deleteFileColumns.stream()
+                    .map(name -> deleteRowSchema.findField(name).fieldId())
+                    .collect(toImmutableList());
+            Types.StructType structType = (Types.StructType) deleteRowSchema.findField("root").type();
+
+            for (Map<String, String> deletedValues : ImmutableList.of(
+                    ImmutableMap.of("a", "x2", "b", "y2", "c", "z2"),
+                    ImmutableMap.of("a", "x3", "b", "y3", "c", "z3"))) {
+                Record structRecord = GenericRecord.create(structType);
+                deletedValues.forEach(structRecord::setField);
+                writeEqualityDeleteToNationTableWithDeleteColumns(
+                        icebergTable,
+                        Optional.empty(),
+                        Optional.empty(),
+                        ImmutableMap.of("root", structRecord),
+                        deleteRowSchema,
+                        equalityFieldIds);
+            }
+
+            assertThat(query("SELECT * FROM " + tableName))
+                    .matches("VALUES (BIGINT '1', CAST(row('x1', 'y1', 'z1') AS ROW(a VARCHAR, b VARCHAR, c VARCHAR)))");
+
+            // verify that the equality delete is effective when not specifying the corresponding column in the projection list
+            assertThat(query("SELECT id FROM " + tableName))
+                    .matches("VALUES BIGINT '1'");
+
+            // verify that the equality delete is effective when only a subfield of the struct key is projected
+            assertThat(query("SELECT root.b FROM " + tableName))
+                    .matches("VALUES CAST('y1' AS VARCHAR)");
         }
     }
 
@@ -1398,16 +1453,21 @@ public class TestIcebergV2
     public void testStatsManifestDecoding()
     {
         int threshold = TableStatisticsReader.INLINE_MANIFEST_DECODE_THRESHOLD;
+        IcebergColumnHandle column = IcebergColumnHandle.optional(ColumnIdentity.primitiveColumnIdentity(1, "a")).columnType(INTEGER).build();
         try (TestTable testTable = newTrinoTable("test_stats_manifest_decoding_", "(a INT)")) {
             for (int i = 0; i < threshold - 1; i++) {
                 assertUpdate("INSERT INTO " + testTable.getName() + " VALUES (" + i + ")", 1);
             }
+            // manifests are decoded inline and accumulated into a single set of statistics
             assertThat(manifestCount(testTable.getName())).isLessThan(threshold);
             assertThat(tableRowCountFromStatistics(testTable.getName())).isEqualTo(threshold - 1);
+            assertThat(columnRangeFromStatistics(testTable.getName(), column)).contains(new DoubleRange(0, threshold - 2));
 
             assertUpdate("INSERT INTO " + testTable.getName() + " VALUES (100)", 1);
+            // manifests are decoded in parallel and the per-manifest statistics merged
             assertThat(manifestCount(testTable.getName())).isGreaterThanOrEqualTo(threshold);
             assertThat(tableRowCountFromStatistics(testTable.getName())).isEqualTo(threshold);
+            assertThat(columnRangeFromStatistics(testTable.getName(), column)).contains(new DoubleRange(0, 100));
         }
     }
 
@@ -1418,16 +1478,28 @@ public class TestIcebergV2
 
     private double tableRowCountFromStatistics(String tableName)
     {
+        return tableStatistics(tableName, ImmutableSet.of()).getRowCount().getValue();
+    }
+
+    private Optional<DoubleRange> columnRangeFromStatistics(String tableName, IcebergColumnHandle column)
+    {
+        return tableStatistics(tableName, ImmutableSet.of(column))
+                .getColumnStatistics()
+                .get(column)
+                .getRange();
+    }
+
+    private TableStatistics tableStatistics(String tableName, Set<IcebergColumnHandle> projectedColumns)
+    {
         OptionalLong snapshotId = OptionalLong.of((long) computeScalar("SELECT snapshot_id FROM \"" + tableName + "$snapshots\" ORDER BY committed_at DESC FETCH FIRST 1 ROW WITH TIES"));
-        TableStatistics statistics = TableStatisticsReader.makeTableStatistics(
+        return TableStatisticsReader.makeTableStatistics(
                 TESTING_TYPE_MANAGER,
                 loadTable(tableName),
                 snapshotId,
                 TupleDomain.all(),
                 TupleDomain.all(),
-                ImmutableSet.of(),
+                projectedColumns,
                 newDirectExecutorService());
-        return statistics.getRowCount().getValue();
     }
 
     @Test

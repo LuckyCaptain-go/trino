@@ -363,6 +363,16 @@ public final class DateTimeFunctions
         }
     }
 
+    public static boolean isValidDateUnit(Slice unit)
+    {
+        for (DateTimeFieldProvider dateField : DATE_FIELDS) {
+            if (dateField.match(unit)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static DateTimeField getDateField(ISOChronology chronology, Slice unit)
     {
         for (DateTimeFieldProvider dateField : DATE_FIELDS) {
@@ -371,6 +381,16 @@ public final class DateTimeFunctions
             }
         }
         throw new TrinoException(INVALID_FUNCTION_ARGUMENT, "'" + unit.toStringUtf8() + "' is not a valid DATE field");
+    }
+
+    public static boolean isValidTimestampUnit(Slice unit)
+    {
+        for (DateTimeFieldProvider timestampField : TIMESTAMP_FIELDS) {
+            if (timestampField.match(unit)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static DateTimeField getTimestampField(ISOChronology chronology, Slice unit)
@@ -428,7 +448,7 @@ public final class DateTimeFunctions
     {
         if (ISO_8601_DATE_FORMAT.equals(formatString)) {
             try {
-                long days = DateTimeUtils.parseDate(dateTime.toStringUtf8());
+                long days = DateTimeUtils.parseDate(dateTime);
                 return scaleEpochMillisToMicros(days * MILLISECONDS_PER_DAY);
             }
             catch (IllegalArgumentException | ArithmeticException | DateTimeException e) {

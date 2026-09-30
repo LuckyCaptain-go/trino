@@ -61,9 +61,8 @@ import static com.google.common.base.Predicates.alwaysTrue;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.airlift.slice.Slices.utf8Slice;
+import static io.trino.plugin.deltalake.transactionlog.DeltaLakeParquetStatisticsUtils.convertParquetToJsonStatistics;
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeParquetStatisticsUtils.jsonValueToTrinoValue;
-import static io.trino.plugin.deltalake.transactionlog.DeltaLakeParquetStatisticsUtils.toJsonValues;
-import static io.trino.plugin.deltalake.transactionlog.DeltaLakeParquetStatisticsUtils.toNullCounts;
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.extractPartitionColumns;
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.extractSchema;
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.isDeletionVectorEnabled;
@@ -349,11 +348,7 @@ public class CheckpointWriter
             DeltaLakeFileStatistics statistics = addFileEntry.getStats().get();
             if (statistics instanceof DeltaLakeParquetFileStatistics parquetFileStatistics) {
                 Map<String, Type> columnTypeMapping = getColumnTypeMapping(metadataEntry, protocolEntry);
-                DeltaLakeJsonFileStatistics jsonFileStatistics = new DeltaLakeJsonFileStatistics(
-                        parquetFileStatistics.getNumRecords(),
-                        parquetFileStatistics.getMinValues().map(values -> toJsonValues(columnTypeMapping, values)),
-                        parquetFileStatistics.getMaxValues().map(values -> toJsonValues(columnTypeMapping, values)),
-                        parquetFileStatistics.getNullCount().map(nullCounts -> toNullCounts(columnTypeMapping, nullCounts)));
+                DeltaLakeJsonFileStatistics jsonFileStatistics = convertParquetToJsonStatistics(columnTypeMapping, parquetFileStatistics);
                 statsJson = getStatsString(jsonFileStatistics).orElse(null);
             }
             else {
@@ -419,6 +414,7 @@ public class CheckpointWriter
                 writeMinMaxMapAsFields(fieldBuilders.get(1), statsType, 1, "minValues", stats.getMinValues(), false);
                 writeMinMaxMapAsFields(fieldBuilders.get(2), statsType, 2, "maxValues", stats.getMaxValues(), false);
                 writeNullCountAsFields(fieldBuilders.get(3), statsType, 3, "nullCount", stats.getNullCount());
+                writeBoolean(fieldBuilders.get(4), statsType, 4, "tightBounds", stats.getTightBounds().orElse(null));
             }
             else {
                 int internalFieldId = 0;
@@ -435,6 +431,9 @@ public class CheckpointWriter
                     internalFieldId++;
                 }
                 writeNullCountAsFields(fieldBuilders.get(internalFieldId), statsType, internalFieldId, "nullCount", stats.getNullCount());
+                internalFieldId++;
+
+                writeBoolean(fieldBuilders.get(internalFieldId), statsType, internalFieldId, "tightBounds", stats.getTightBounds().orElse(null));
             }
         });
     }
@@ -491,7 +490,7 @@ public class CheckpointWriter
     {
         return valuesOptional.map(
                 values -> {
-                    Map<String, Type> fieldTypes = valuesType.getFields().stream().collect(toMap(
+                    Map<String, Type> fieldTypes = valuesType.getFields().stream().collect(toImmutableMap(
                             // anonymous row fields are not expected here
                             field -> field.getName().orElseThrow(),
                             RowType.Field::getType));
@@ -580,9 +579,13 @@ public class CheckpointWriter
         field.getType().writeLong(blockBuilder, value);
     }
 
-    private void writeBoolean(BlockBuilder blockBuilder, RowType type, int fieldId, String fieldName, boolean value)
+    private void writeBoolean(BlockBuilder blockBuilder, RowType type, int fieldId, String fieldName, @Nullable Boolean value)
     {
         RowType.Field field = validateAndGetField(type, fieldId, fieldName);
+        if (value == null) {
+            blockBuilder.appendNull();
+            return;
+        }
         field.getType().writeBoolean(blockBuilder, value);
     }
 

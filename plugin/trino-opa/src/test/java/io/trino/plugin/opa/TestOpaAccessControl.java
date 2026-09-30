@@ -128,6 +128,7 @@ final class TestOpaAccessControl
         testTableResourceActions("DropTable", OpaAccessControl::checkCanDropTable);
         testTableResourceActions("SetTableComment", OpaAccessControl::checkCanSetTableComment);
         testTableResourceActions("SetViewComment", OpaAccessControl::checkCanSetViewComment);
+        testTableResourceActions("SetMaterializedViewComment", OpaAccessControl::checkCanSetMaterializedViewComment);
         testTableResourceActions("SetColumnComment", OpaAccessControl::checkCanSetColumnComment);
         testTableResourceActions("ShowColumns", OpaAccessControl::checkCanShowColumns);
         testTableResourceActions("AddColumn", OpaAccessControl::checkCanAddColumn);
@@ -481,7 +482,7 @@ final class TestOpaAccessControl
                         "type": "%s"
                     }
                 }
-                """.formatted(schema.getCatalogName(), schema.getSchemaName(), principal.getName(), principal.getType());
+                """.formatted(schema.getCatalogName(), schema.getSchemaName(), principal.getPrincipalName(), principal.getType());
         assertAccessControlMethodBehaviour(methodWrapper, ImmutableSet.of(expectedRequest));
     }
 
@@ -522,7 +523,7 @@ final class TestOpaAccessControl
                         table.getCatalogName(),
                         table.getSchemaTableName().getSchemaName(),
                         table.getSchemaTableName().getTableName(),
-                        principal.getName(),
+                        principal.getPrincipalName(),
                         principal.getType());
         assertAccessControlMethodBehaviour(wrappedMethod, ImmutableSet.of(expectedRequest));
     }

@@ -72,6 +72,7 @@ import io.trino.spi.connector.JoinApplicationResult;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
 import io.trino.spi.connector.MaterializedViewFreshness;
+import io.trino.spi.connector.MemoryContext;
 import io.trino.spi.connector.ProjectionApplicationResult;
 import io.trino.spi.connector.RecordPageSource;
 import io.trino.spi.connector.RelationColumnsMetadata;
@@ -795,6 +796,9 @@ public class MockConnector
         public void setMaterializedViewProperties(ConnectorSession session, SchemaTableName viewName, Map<String, Optional<Object>> properties) {}
 
         @Override
+        public void setMaterializedViewComment(ConnectorSession session, SchemaTableName viewName, Optional<String> comment) {}
+
+        @Override
         public Map<SchemaTableName, ConnectorViewDefinition> getViews(ConnectorSession session, Optional<String> schemaName)
         {
             return getViews.apply(session, schemaName.map(SchemaTablePrefix::new).orElseGet(SchemaTablePrefix::new));
@@ -892,7 +896,10 @@ public class MockConnector
         }
 
         @Override
-        public void finishMerge(ConnectorSession session, ConnectorMergeTableHandle mergeTableHandle, List<ConnectorTableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics) {}
+        public Optional<ConnectorOutputMetadata> finishMerge(ConnectorSession session, ConnectorMergeTableHandle mergeTableHandle, List<ConnectorTableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+        {
+            return Optional.empty();
+        }
 
         @Override
         public ConnectorTableProperties getTableProperties(ConnectorSession session, ConnectorTableHandle table)
@@ -1085,7 +1092,8 @@ public class MockConnector
                 ConnectorSession session,
                 ConnectorMergeTableHandle mergeHandle,
                 Optional<ConnectorTableCredentials> tableCredentials,
-                ConnectorPageSinkId pageSinkId)
+                ConnectorPageSinkId pageSinkId,
+                MemoryContext memoryContext)
         {
             return new MockPageSink();
         }
