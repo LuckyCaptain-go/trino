@@ -13,15 +13,8 @@
  */
 package io.trino.plugin.dm;
 
-import io.trino.plugin.jdbc.BaseJdbcConfig;
-import io.trino.testing.QueryRunner;
-import io.trino.testing.sql.SqlExecutor;
-import io.trino.tpchtpch.TpchTable;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
-import static io.trino.tpchtpch.TpchTable.NATION;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -40,7 +33,9 @@ public class TestDmConnector
     {
         DmPlugin plugin = new DmPlugin();
         assertThat(plugin).isNotNull();
-        assertThat(plugin.getConnectorName()).isEqualTo("dm");
+        assertThat(plugin.getConnectorFactories())
+                .singleElement()
+                .satisfies(factory -> assertThat(factory.getName()).isEqualTo("dm"));
     }
 
     /**
@@ -52,10 +47,10 @@ public class TestDmConnector
     {
         DmConfig config = new DmConfig();
         assertThat(config.isIncludeSystemTables()).isFalse();
-        
+
         config.setIncludeSystemTables(true);
         assertThat(config.isIncludeSystemTables()).isTrue();
-        
+
         config.setFetchSize(1000);
         assertThat(config.getFetchSize()).hasValue(1000);
     }
