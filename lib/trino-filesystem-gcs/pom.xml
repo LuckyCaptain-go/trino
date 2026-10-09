@@ -48,14 +48,6 @@
                     <groupId>com.google.guava</groupId>
                     <artifactId>listenablefuture</artifactId>
                 </exclusion>
-                <exclusion>
-                    <groupId>commons-logging</groupId>
-                    <artifactId>commons-logging</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>javax.annotation</groupId>
-                    <artifactId>javax.annotation-api</artifactId>
-                </exclusion>
             </exclusions>
         </dependency>
 
@@ -197,8 +189,8 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
                             <excludes>
-                                <exclude>**/TestGcsFileSystem.java</exclude>
-                                <exclude>**/TestGcsFileSystemWithEncryption.java</exclude>
+                                <exclude>**/TestGcsFileSystemGcp.java</exclude>
+                                <exclude>**/TestGcsFileSystemGcpWithEncryption.java</exclude>
                             </excludes>
                         </configuration>
                     </plugin>
@@ -215,8 +207,8 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
                             <includes>
-                                <include>**/TestGcsFileSystem.java</include>
-                                <include>**/TestGcsFileSystemWithEncryption.java</include>
+                                <include>**/TestGcsFileSystemGcp.java</include>
+                                <include>**/TestGcsFileSystemGcpWithEncryption.java</include>
                             </includes>
                         </configuration>
                     </plugin>

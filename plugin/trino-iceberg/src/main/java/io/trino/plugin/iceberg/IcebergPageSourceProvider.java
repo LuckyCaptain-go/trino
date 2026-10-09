@@ -209,6 +209,7 @@ import static io.trino.plugin.iceberg.IcebergUtil.deserializePartitionValue;
 import static io.trino.plugin.iceberg.IcebergUtil.getColumnHandle;
 import static io.trino.plugin.iceberg.IcebergUtil.getPartitionKeys;
 import static io.trino.plugin.iceberg.IcebergUtil.getPartitionValues;
+import static io.trino.plugin.iceberg.IcebergUtil.getProjectedColumns;
 import static io.trino.plugin.iceberg.IcebergUtil.schemaFromHandles;
 import static io.trino.plugin.iceberg.util.OrcIcebergIds.fileColumnsByIcebergId;
 import static io.trino.plugin.iceberg.util.OrcTypeConverter.ORC_ICEBERG_ID_KEY;
@@ -217,6 +218,7 @@ import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateTimeEncoding.packDateTimeWithZone;
 import static io.trino.spi.type.TimeZoneKey.UTC_KEY;
+import static io.trino.spi.type.TypeUtils.containsType;
 import static io.trino.spi.type.TypeUtils.writeNativeValue;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static java.lang.Math.addExact;
@@ -413,8 +415,12 @@ public class IcebergPageSourceProvider
         List<IcebergColumnHandle> requiredColumns = new ArrayList<>(icebergColumns);
 
         Set<IcebergColumnHandle> deleteFilterRequiredColumns = requiredColumnsForDeletes(tableSchema, deletes);
+        // compare by field id not handle; IcebergColumnHandle can differ when fields have comments
+        Set<Integer> projectedIds = icebergColumns.stream()
+                .map(IcebergColumnHandle::getId)
+                .collect(toImmutableSet());
         deleteFilterRequiredColumns.stream()
-                .filter(not(icebergColumns::contains))
+                .filter(column -> !projectedIds.contains(column.getId()))
                 .forEach(requiredColumns::add);
 
         Optional<FileDecryptionProperties> parquetFileDecryptionProperties = createParquetFileDecryptionProperties(parquetFileDecryptionData, arePlaintextFilesAllowedForEncryptedTables(session));
@@ -560,15 +566,18 @@ public class IcebergPageSourceProvider
     private Set<IcebergColumnHandle> requiredColumnsForDeletes(Schema schema, List<DeleteFile> deletes)
     {
         ImmutableSet.Builder<IcebergColumnHandle> requiredColumns = ImmutableSet.builder();
+        ImmutableSet.Builder<Integer> equalityFieldIds = ImmutableSet.builder();
         for (DeleteFile deleteFile : deletes) {
             if (deleteFile.content() == POSITION_DELETES) {
                 requiredColumns.add(getColumnHandle(ROW_POSITION, typeManager));
             }
             else if (deleteFile.content() == EQUALITY_DELETES) {
-                deleteFile.equalityFieldIds().stream()
-                        .map(id -> getColumnHandle(schema.findField(id), typeManager))
-                        .forEach(requiredColumns::add);
+                equalityFieldIds.addAll(deleteFile.equalityFieldIds());
             }
+        }
+        Set<Integer> fieldIds = equalityFieldIds.build();
+        if (!fieldIds.isEmpty()) {
+            requiredColumns.addAll(getProjectedColumns(schema, typeManager, fieldIds));
         }
 
         return requiredColumns.build();
@@ -1873,19 +1882,7 @@ public class IcebergPageSourceProvider
 
     private static boolean containsGeospatial(Type type)
     {
-        if (isGeospatialType(type)) {
-            return true;
-        }
-        if (type instanceof ArrayType arrayType) {
-            return containsGeospatial(arrayType.getElementType());
-        }
-        if (type instanceof MapType mapType) {
-            return containsGeospatial(mapType.getKeyType()) || containsGeospatial(mapType.getValueType());
-        }
-        if (type instanceof RowType rowType) {
-            return rowType.getFields().stream().anyMatch(field -> containsGeospatial(field.getType()));
-        }
-        return false;
+        return containsType(type, GeoSpatialUtils::isGeospatialType);
     }
 
     private static boolean containsGeospatial(org.apache.iceberg.types.Type type)

@@ -117,7 +117,8 @@ statement
         (WHEN STALE (INLINE | FAIL))?
         (COMMENT string)?
         (WITH properties)? AS rootQuery                                #createMaterializedView
-    | CREATE (OR REPLACE)? VIEW qualifiedName
+    | CREATE (OR REPLACE)? VIEW
+        (IF NOT EXISTS)? qualifiedName
         (COMMENT string)?
         (SECURITY (DEFINER | INVOKER))?
         (WITH properties)? AS rootQuery                                #createView
@@ -370,9 +371,13 @@ setQuantifier
     ;
 
 selectItem
-    : expression (AS? identifier)?                          #selectSingle
+    : aliasedExpression                                    #selectSingle
     | primaryExpression '.' ASTERISK (AS columnAliases)?    #selectAll
     | ASTERISK                                              #selectAll
+    ;
+
+aliasedExpression
+    : expression (AS? identifier)?
     ;
 
 relation
@@ -414,7 +419,7 @@ pivot
     ;
 
 pivotAggregation
-    : expression (AS? identifier)?
+    : aliasedExpression
     ;
 
 pivotColumns
@@ -424,7 +429,7 @@ pivotColumns
 
 pivotValueGroup
     : '(' expression (',' expression)+ ')' (AS? identifier)?
-    | expression (AS? identifier)?
+    | aliasedExpression
     ;
 
 sampleType
@@ -642,6 +647,9 @@ primaryExpression
         (ON OVERFLOW listAggOverflowBehavior)? ')'
         (WITHIN GROUP '(' orderBy ')')
         filter? over?                                                                     #listagg
+    // Keep jsonConstructor before the functionCall alternatives: JSON is non-reserved,
+    // so JSON(x) matches both. ANTLR selects the first matching alternative.
+    | JSON '(' jsonValueExpression ')'                                                    #jsonConstructor
     | processingMode? qualifiedName '(' (label=identifier '.')? ASTERISK ')'
         filter? over?                                                                     #functionCall
     | processingMode? qualifiedName '(' (setQuantifier? argument (',' argument)*)?
@@ -683,7 +691,9 @@ primaryExpression
         FROM start=valueExpression (FOR length=valueExpression)? ')'                      #overlay
     | NORMALIZE '(' valueExpression (',' normalForm)? ')'                                 #normalize
     | EXTRACT '(' identifier FROM valueExpression ')'                                     #extract
+    // Prefer grouping when a following bare field can be an implicit alias.
     | '(' expression ')'                                                                  #parenthesizedExpression
+    | '(' valueExpression ')' intervalQualifier                                           #intervalValueExpression
     | GROUPING '(' (qualifiedName (',' qualifiedName)*)? ')'                              #groupingOperation
     | JSON_EXISTS '(' jsonPathInvocation (jsonExistsErrorBehavior ON ERROR)? ')'          #jsonExists
     | JSON_VALUE '('
@@ -700,6 +710,11 @@ primaryExpression
         (emptyBehavior=jsonQueryBehavior ON EMPTY)?
         (errorBehavior=jsonQueryBehavior ON ERROR)?
       ')'                                                                                 #jsonQuery
+    | JSON_SERIALIZE '('
+        jsonValueExpression
+        (RETURNING type (FORMAT jsonRepresentation)?)?
+        (errorBehavior=jsonSerializeOnErrorBehavior ON ERROR)?
+      ')'                                                                                 #jsonSerialize
     | JSON_OBJECT '('
         (
           jsonObjectMember (',' jsonObjectMember)*
@@ -729,7 +744,7 @@ literal
     ;
 
 fieldConstructor
-    : expression (AS? identifier)?
+    : aliasedExpression
     ;
 
 jsonPathInvocation
@@ -773,6 +788,11 @@ jsonQueryBehavior
     | NULL
     | EMPTY ARRAY
     | EMPTY OBJECT
+    ;
+
+jsonSerializeOnErrorBehavior
+    : ERROR
+    | NULL
     ;
 
 jsonObjectMember
@@ -835,15 +855,15 @@ type
     ;
 
 intervalQualifier
-  : YEAR ('(' precision=INTEGER_VALUE ')')? TO MONTH                                              #compositeYearToMonthInterval
-  | field=(YEAR | MONTH) ('(' precision=INTEGER_VALUE ')')?                                       #simpleYearMonthInterval
-  | start=(DAY | HOUR | MINUTE) ('(' leadingPrecision=INTEGER_VALUE ')')?
+  : YEAR ('(' precision=typeParameter ')')? TO MONTH                                              #compositeYearToMonthInterval
+  | field=(YEAR | MONTH) ('(' precision=typeParameter ')')?                                       #simpleYearMonthInterval
+  | start=(DAY | HOUR | MINUTE) ('(' leadingPrecision=typeParameter ')')?
     TO (
       end=HOUR |
       end=MINUTE |
-      end=SECOND ('(' fractionalPrecision=INTEGER_VALUE ')')?)                                    #compositeDayTimeInterval
-  | field=(DAY | HOUR | MINUTE) ('(' precision=INTEGER_VALUE ')')?                                #simpleDayTimeInterval
-  | SECOND ('(' leadingPrecision=INTEGER_VALUE (',' fractionalPrecision=INTEGER_VALUE)? ')')?     #secondsDayTimeInterval
+      end=SECOND ('(' fractionalPrecision=typeParameter ')')?)                                    #compositeDayTimeInterval
+  | field=(DAY | HOUR | MINUTE) ('(' precision=typeParameter ')')?                                #simpleDayTimeInterval
+  | SECOND ('(' leadingPrecision=typeParameter (',' fractionalPrecision=typeParameter)? ')')?     #secondsDayTimeInterval
   ;
 
 rowField
@@ -1272,6 +1292,7 @@ JSON_ARRAY: 'JSON_ARRAY';
 JSON_EXISTS: 'JSON_EXISTS';
 JSON_OBJECT: 'JSON_OBJECT';
 JSON_QUERY: 'JSON_QUERY';
+JSON_SERIALIZE: 'JSON_SERIALIZE';
 JSON_TABLE: 'JSON_TABLE';
 JSON_VALUE: 'JSON_VALUE';
 KEEP: 'KEEP';

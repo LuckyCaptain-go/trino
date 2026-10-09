@@ -62,7 +62,6 @@ import java.util.List;
 import java.util.Random;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.airlift.slice.Slices.EMPTY_SLICE;
 import static io.trino.spi.StandardErrorCode.INVALID_ROW_FILTER;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
@@ -308,10 +307,10 @@ class FakerPageSource
             DoubleRange range = DoubleRange.of(genericRange, (double) handle.step().getSingleValue());
             return (blockBuilder, rowId) -> DOUBLE.writeDouble(blockBuilder, range.at(rowId));
         }
-        if (type.getBaseName().equals(StandardTypes.INTERVAL_DAY_TO_SECOND) || type.getBaseName().equals(StandardTypes.INTERVAL_YEAR_TO_MONTH)) {
-            // step is seconds or months
-            IntRange range = IntRange.of(genericRange, (long) handle.step().getSingleValue());
-            return (blockBuilder, rowId) -> type.writeLong(blockBuilder, range.at(rowId));
+        if (IntervalValues.isInterval(type)) {
+            IntervalValues.Bounds bounds = IntervalValues.bounds(type, genericRange);
+            long step = (long) handle.step().getSingleValue();
+            return (blockBuilder, rowId) -> type.writeLong(blockBuilder, bounds.at(rowId, step));
         }
         if (type instanceof TimestampType timestampType) {
             if (timestampType.isShort()) {
@@ -384,7 +383,9 @@ class FakerPageSource
             return blockBuilder -> blockBuilder.append(emptyBlock, 0);
         }
         if (type.getBaseName().equals(StandardTypes.JSON)) {
-            return blockBuilder -> type.writeSlice(blockBuilder, EMPTY_SLICE);
+            // An empty slice is not a valid JSON document and would fail the parse on read;
+            // the JSON null literal is the canonical empty value.
+            return blockBuilder -> type.writeSlice(blockBuilder, Slices.utf8Slice("null"));
         }
 
         Range genericRange = handle.domain().getValues().getRanges().getSpan();
@@ -433,13 +434,12 @@ class FakerPageSource
             return blockBuilder -> DOUBLE.writeDouble(blockBuilder, range.low == range.high ? range.low : random.nextDouble(range.low, range.high));
         }
         // not supported: HYPER_LOG_LOG, QDIGEST, TDIGEST, P4_HYPER_LOG_LOG
-        if (type.getBaseName().equals(StandardTypes.INTERVAL_DAY_TO_SECOND)) {
-            LongRange range = LongRange.of(genericRange);
-            return blockBuilder -> type.writeLong(blockBuilder, numberBetween(range.low, range.high));
-        }
-        if (type.getBaseName().equals(StandardTypes.INTERVAL_YEAR_TO_MONTH)) {
-            IntRange range = IntRange.of(genericRange);
-            return blockBuilder -> type.writeLong(blockBuilder, numberBetween(range.low, range.high));
+        if (IntervalValues.isInterval(type)) {
+            IntervalValues.Bounds bounds = IntervalValues.bounds(type, genericRange);
+            // Shift the sampling interval when its inclusive upper bound cannot be incremented.
+            return blockBuilder -> type.writeLong(blockBuilder, (bounds.high() == Long.MAX_VALUE
+                    ? numberBetween(bounds.low() - 1, bounds.high()) + 1
+                    : numberBetween(bounds.low(), bounds.high() + 1)) * bounds.quantum());
         }
         if (type instanceof TimestampType timestampType) {
             return timestampGenerator(genericRange, timestampType);
@@ -524,10 +524,8 @@ class FakerPageSource
             return (blockBuilder, value) -> DOUBLE.writeDouble(blockBuilder, (Double) value);
         }
         // not supported: HYPER_LOG_LOG, QDIGEST, TDIGEST, P4_HYPER_LOG_LOG
-        if (type.getBaseName().equals(StandardTypes.INTERVAL_DAY_TO_SECOND)) {
-            return (blockBuilder, value) -> type.writeLong(blockBuilder, (Long) value);
-        }
-        if (type.getBaseName().equals(StandardTypes.INTERVAL_YEAR_TO_MONTH)) {
+        if (IntervalValues.isInterval(type)) {
+            IntervalValues.checkSupported(type);
             return (blockBuilder, value) -> type.writeLong(blockBuilder, (Long) value);
         }
         if (type instanceof TimestampType tzType) {

@@ -15,6 +15,7 @@ package io.trino.parquet.reader;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ListMultimap;
 import com.google.common.io.Resources;
 import io.airlift.slice.Slice;
@@ -46,13 +47,26 @@ import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.Type;
 import org.apache.parquet.column.ColumnDescriptor;
+import org.apache.parquet.example.data.Group;
+import org.apache.parquet.example.data.simple.SimpleGroupFactory;
+import org.apache.parquet.hadoop.ParquetWriter;
+import org.apache.parquet.hadoop.example.ExampleParquetWriter;
+import org.apache.parquet.io.LocalOutputFile;
 import org.apache.parquet.io.MessageColumnIO;
 import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.schema.MessageTypeParser;
+import org.apache.parquet.schema.Types;
+import org.joda.time.DateTimeZone;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.io.File;
 import java.io.IOException;
 import java.net.URISyntaxException;
+import java.nio.file.Path;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -62,6 +76,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.IntStream;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static io.trino.parquet.ParquetTestUtils.createArrayBlock;
@@ -80,13 +95,23 @@ import static io.trino.parquet.reader.ParquetReader.isRowSelectionBeneficial;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.IntegerType.INTEGER;
+import static io.trino.spi.type.RowType.field;
+import static io.trino.spi.type.RowType.rowType;
+import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
 import static io.trino.spi.type.VarcharType.VARCHAR;
+import static io.trino.type.JsonType.JSON;
 import static java.lang.Math.min;
 import static java.lang.Math.toIntExact;
+import static java.util.Collections.singletonList;
+import static java.util.concurrent.TimeUnit.MINUTES;
+import static org.apache.parquet.hadoop.ParquetFileWriter.Mode.OVERWRITE;
+import static org.apache.parquet.schema.LogicalTypeAnnotation.TimeUnit.MILLIS;
+import static org.apache.parquet.schema.LogicalTypeAnnotation.timestampType;
 import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.BINARY;
 import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.BOOLEAN;
 import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY;
 import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.INT32;
+import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.INT64;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.joda.time.DateTimeZone.UTC;
@@ -846,6 +871,66 @@ public class TestParquetReader
                 predicate);
     }
 
+    @Test
+    public void testInt64TimestampAdjustedToUtcPredicateAcrossDstTransition(@TempDir Path directory)
+            throws IOException
+    {
+        MessageType schema = Types.buildMessage()
+                .required(INT64).as(timestampType(true, MILLIS)).named("ts")
+                .named("test");
+        int rowCount = 240;
+        Path file = directory.resolve("timestamps.parquet");
+        // One row per minute across the America/New_York fall-back transition at 2024-11-03T06:00Z
+        long startMillis = Instant.parse("2024-11-03T04:00:00Z").toEpochMilli();
+        ExampleParquetWriter.Builder builder = ExampleParquetWriter.builder(new LocalOutputFile(file))
+                .withType(schema)
+                .withWriteMode(OVERWRITE)
+                .withDictionaryEncoding(false)
+                .withRowGroupRowCountLimit(75)
+                .withPageRowCountLimit(10);
+        try (ParquetWriter<Group> writer = builder.build()) {
+            SimpleGroupFactory factory = new SimpleGroupFactory(schema);
+            for (int row = 0; row < rowCount; row++) {
+                writer.write(factory.newGroup().append("ts", startMillis + MINUTES.toMillis(row)));
+            }
+        }
+
+        DateTimeZone timeZone = DateTimeZone.forID("America/New_York");
+        List<Long> values = readTimestampValues(file, timeZone, TupleDomain.all());
+        assertThat(values).hasSize(rowCount);
+        for (long value : ImmutableSet.copyOf(values)) {
+            List<Long> expected = values.stream()
+                    .filter(candidate -> candidate == value)
+                    .collect(toImmutableList());
+            assertThat(readTimestampValues(file, timeZone, TupleDomain.withColumnDomains(ImmutableMap.of("ts", Domain.singleValue(TIMESTAMP_MILLIS, value)))))
+                    .filteredOn(candidate -> candidate == value)
+                    .isEqualTo(expected);
+        }
+    }
+
+    private static List<Long> readTimestampValues(Path file, DateTimeZone timeZone, TupleDomain<String> predicate)
+            throws IOException
+    {
+        ParquetDataSource dataSource = new FileParquetDataSource(file.toFile(), ParquetReaderOptions.defaultOptions());
+        ParquetMetadata parquetMetadata = MetadataReader.readFooter(dataSource, Optional.empty());
+        ImmutableList.Builder<Long> values = ImmutableList.builder();
+        try (ParquetReader reader = createParquetReader(
+                dataSource,
+                parquetMetadata,
+                ParquetReaderOptions.defaultOptions(),
+                newSimpleAggregatedMemoryContext(),
+                ImmutableList.of(TIMESTAMP_MILLIS),
+                ImmutableList.of("ts"),
+                predicate,
+                false,
+                timeZone)) {
+            for (SourcePage page = reader.nextPage(); page != null; page = reader.nextPage()) {
+                values.addAll(blockValues(page.getBlock(0)));
+            }
+        }
+        return values.build();
+    }
+
     private static List<Long> blockValues(Block block)
     {
         ImmutableList.Builder<Long> values = ImmutableList.builder();
@@ -864,13 +949,66 @@ public class TestParquetReader
         return values.build();
     }
 
+    @ParameterizedTest
+    @CsvSource({"false, false", "false, true", "true, false", "true, true"})
+    public void testJsonAnnotatedBinary(boolean dictionaryEnabled, boolean nullable, @TempDir Path directory)
+            throws IOException
+    {
+        MessageType schema = MessageTypeParser.parseMessageType(
+                """
+                message schema {
+                  optional binary payload (JSON);
+                  optional group nested {
+                    optional binary payload (JSON);
+                  }
+                }
+                """);
+        List<String> jsonValues = Arrays.asList(
+                "{\"currency\":\"USD\",\"tags\":[\"red\",\"green\"]}",
+                "[1,true,{\"nested\":null}]",
+                "\"text\"",
+                "42",
+                "true",
+                "null",
+                nullable ? null : "{}");
+        List<String> values = IntStream.range(0, 100)
+                .mapToObj(position -> jsonValues.get(position % jsonValues.size()))
+                .toList();
+        Path file = directory.resolve("json.parquet");
+        try (ParquetWriter<Group> writer = ExampleParquetWriter.builder(new LocalOutputFile(file))
+                .withType(schema)
+                .withDictionaryEncoding(dictionaryEnabled)
+                .build()) {
+            SimpleGroupFactory factory = new SimpleGroupFactory(schema);
+            for (String value : values) {
+                Group row = factory.newGroup();
+                Group nested = row.addGroup("nested");
+                if (value != null) {
+                    row.append("payload", value);
+                    nested.append("payload", value);
+                }
+                writer.write(row);
+            }
+        }
+
+        try (ParquetDataSource dataSource = new FileParquetDataSource(file.toFile(), ParquetReaderOptions.defaultOptions())) {
+            ParquetMetadata metadata = MetadataReader.readFooter(dataSource, Optional.empty());
+            metadata.getBlocks().forEach(block -> block.columns().forEach(column ->
+                    assertThat(column.getEncodingStats().hasDictionaryEncodedPages()).isEqualTo(dictionaryEnabled)));
+        }
+        assertReadValues(file.toFile(), ImmutableList.of("payload"), JSON, values);
+        assertReadValues(file.toFile(), ImmutableList.of("nested"), rowType(field("payload", JSON)), values.stream()
+                .map(value -> singletonList(value))
+                .collect(toImmutableList()));
+    }
+
     @Test
     public void testBackwardsCompatibleRepeatedStringField()
             throws Exception
     {
         File parquetFile = new File(Resources.getResource("parquet_repeated_primitives/string/old-repeated-string.parquet").toURI());
         List<List<String>> expectedValues = ImmutableList.of(Arrays.asList("hello", "world"), Arrays.asList("good", "bye"), Arrays.asList("one", "two", "three"));
-        testReadingOldParquetFiles(parquetFile, ImmutableList.of("myString"), new ArrayType(VARCHAR), expectedValues);
+        assertReadValues(parquetFile, ImmutableList.of("myString"), new ArrayType(VARCHAR), expectedValues);
     }
 
     @Test
@@ -879,7 +1017,7 @@ public class TestParquetReader
     {
         File parquetFile = new File(Resources.getResource("parquet_repeated_primitives/int/old-repeated-int.parquet").toURI());
         List<List<Integer>> expectedValues = ImmutableList.of(Arrays.asList(1, 2, 3));
-        testReadingOldParquetFiles(parquetFile, ImmutableList.of("repeatedInt"), new ArrayType(INTEGER), expectedValues);
+        assertReadValues(parquetFile, ImmutableList.of("repeatedInt"), new ArrayType(INTEGER), expectedValues);
     }
 
     @Test
@@ -888,9 +1026,77 @@ public class TestParquetReader
         assertThatThrownBy(() -> {
             File parquetFile = new File(Resources.getResource("parquet_repeated_primitives/int/old-repeated-int.parquet").toURI());
             List<List<Integer>> expectedValues = ImmutableList.of(Arrays.asList(1, 2, 3));
-            testReadingOldParquetFiles(parquetFile, ImmutableList.of("repeatedInt"), INTEGER, expectedValues);
+            assertReadValues(parquetFile, ImmutableList.of("repeatedInt"), INTEGER, expectedValues);
         }).hasMessage("Unsupported Trino column type (integer) for Parquet column ([repeatedint] repeated int32 repeatedint)")
                 .isInstanceOf(TrinoException.class);
+    }
+
+    @Test
+    public void testBackwardsCompatibleNestedListField(@TempDir Path directory)
+            throws IOException
+    {
+        // LIST whose middle repeated group is named "array" and holds a LIST group.
+        MessageType schema = MessageTypeParser.parseMessageType(
+                """
+                message schema {
+                  optional group nested_list (LIST) {
+                    repeated group array {
+                      optional group inner_list (LIST) {
+                        repeated group array {
+                          optional binary element (STRING);
+                        }
+                      }
+                    }
+                  }
+                }
+                """);
+        Path file = directory.resolve("nested_list.parquet");
+        ExampleParquetWriter.Builder builder = ExampleParquetWriter.builder(new LocalOutputFile(file))
+                .withType(schema)
+                .withWriteMode(OVERWRITE);
+        try (ParquetWriter<Group> writer = builder.build()) {
+            SimpleGroupFactory factory = new SimpleGroupFactory(schema);
+
+            // [["a", "b"], ["c"]]
+            Group row0 = factory.newGroup();
+            Group outer0 = row0.addGroup("nested_list");
+            Group inner00 = outer0.addGroup("array").addGroup("inner_list");
+            inner00.addGroup("array").append("element", "a");
+            inner00.addGroup("array").append("element", "b");
+            outer0.addGroup("array").addGroup("inner_list").addGroup("array").append("element", "c");
+            writer.write(row0);
+
+            // [null]
+            Group row1 = factory.newGroup();
+            row1.addGroup("nested_list").addGroup("array");
+            writer.write(row1);
+
+            // [[]]
+            Group row2 = factory.newGroup();
+            row2.addGroup("nested_list").addGroup("array").addGroup("inner_list");
+            writer.write(row2);
+
+            // []
+            Group row3 = factory.newGroup();
+            row3.addGroup("nested_list");
+            writer.write(row3);
+
+            // null
+            writer.write(factory.newGroup());
+        }
+
+        assertReadValues(file.toFile(), ImmutableList.of("nested_list"), new ArrayType(new ArrayType(VARCHAR)), Arrays.asList(
+                ImmutableList.of(ImmutableList.of("a", "b"), ImmutableList.of("c")),
+                singletonList(null),
+                ImmutableList.of(ImmutableList.of()),
+                ImmutableList.of(),
+                null));
+        assertReadValues(file.toFile(), ImmutableList.of("nested_list"), new ArrayType(rowType(field("inner_list", new ArrayType(VARCHAR)))), Arrays.asList(
+                ImmutableList.of(ImmutableList.of(ImmutableList.of("a", "b")), ImmutableList.of(ImmutableList.of("c"))),
+                ImmutableList.of(singletonList(null)),
+                ImmutableList.of(ImmutableList.of(ImmutableList.of())),
+                ImmutableList.of(),
+                null));
     }
 
     @Test
@@ -1004,7 +1210,7 @@ public class TestParquetReader
         assertThat(metadata.getBlocks().stream().mapToLong(BlockMetadata::rowCount).sum()).isEqualTo(500);
     }
 
-    private void testReadingOldParquetFiles(File file, List<String> columnNames, Type columnType, List<?> expectedValues)
+    private void assertReadValues(File file, List<String> columnNames, Type columnType, List<?> expectedValues)
             throws IOException
     {
         ParquetDataSource dataSource = new FileParquetDataSource(

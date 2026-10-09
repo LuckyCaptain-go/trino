@@ -1882,7 +1882,8 @@ public class TestAnalyzer
 
         assertFails("SELECT array_agg(x) OVER (ORDER BY x RANGE INTERVAL '1' day PRECEDING) FROM (VALUES INTERVAL '1' year) t(x)")
                 .hasErrorCode(TYPE_MISMATCH)
-                .hasMessage("line 1:44: Window frame RANGE value type (interval day to second) not compatible with sort item type (interval year to month)");
+                .hasMessageContaining("Window frame RANGE value type (interval day")
+                .hasMessageContaining("not compatible with sort item type (interval year");
 
         // window frame other than <expression> PRECEDING or <expression> FOLLOWING has no requirements regarding window ORDER BY clause
         // ORDER BY is not required
@@ -3867,73 +3868,23 @@ public class TestAnalyzer
     @Test
     void testInterval()
     {
-        assertFails("SELECT INTERVAL '1' YEAR(1)")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
+        // a fractional-seconds precision up to 12 (picoseconds) is accepted on a trailing SECOND
+        analyze("SELECT INTERVAL '1' DAY(1) TO SECOND(2)");
+        analyze("SELECT INTERVAL '1' HOUR(1) TO SECOND(2)");
+        analyze("SELECT INTERVAL '1' MINUTE(1) TO SECOND(2)");
+        analyze("SELECT INTERVAL '1' SECOND(1, 2)");
+        analyze("SELECT INTERVAL '1' SECOND(1, 12)");
+        analyze("SELECT CAST(NULL AS INTERVAL DAY TO SECOND(9))");
 
-        assertFails("SELECT INTERVAL '1' YEAR(1) TO MONTH")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
+        // an out-of-range leading precision is rejected
+        assertFails("SELECT INTERVAL '1' DAY(10)")
+                .hasErrorCode(INVALID_FUNCTION_ARGUMENT)
+                .hasMessageContaining("INTERVAL day leading precision must be in range [1, 9]: 10");
 
-        assertFails("SELECT INTERVAL '1' MONTH(1)")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
-
-        assertFails("SELECT INTERVAL '1' DAY(1)")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
-
-        assertFails("SELECT INTERVAL '1' DAY(1) TO HOUR")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
-
-        assertFails("SELECT INTERVAL '1' DAY(1) TO MINUTE")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
-
-        assertFails("SELECT INTERVAL '1' DAY(1) TO SECOND")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
-
-        assertFails("SELECT INTERVAL '1' DAY(1) TO SECOND(2)")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
-
-        assertFails("SELECT INTERVAL '1' HOUR(1)")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
-
-        assertFails("SELECT INTERVAL '1' HOUR(1) TO MINUTE")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
-
-        assertFails("SELECT INTERVAL '1' HOUR(1) TO SECOND")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
-
-        assertFails("SELECT INTERVAL '1' HOUR(1) TO SECOND(2)")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
-
-        assertFails("SELECT INTERVAL '1' MINUTE(1)")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
-
-        assertFails("SELECT INTERVAL '1' MINUTE(1) TO SECOND")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
-
-        assertFails("SELECT INTERVAL '1' MINUTE(1) TO SECOND(2)")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
-
-        assertFails("SELECT INTERVAL '1' SECOND(1)")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
-
-        assertFails("SELECT INTERVAL '1' SECOND(1, 2)")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:21: Only INTERVAL literals with default precision are supported");
+        // an out-of-range fractional-seconds precision is rejected
+        assertFails("SELECT INTERVAL '1' SECOND(1, 13)")
+                .hasErrorCode(INVALID_FUNCTION_ARGUMENT)
+                .hasMessageContaining("INTERVAL fractional seconds precision must be in range [0, 12]: 13");
     }
 
     @Test
@@ -6793,6 +6744,42 @@ public class TestAnalyzer
     }
 
     @Test
+    public void testJsonConstructorInputFormats()
+    {
+        analyze("SELECT JSON(json_column) FROM (VALUES '-1', 'ala') t(json_column)");
+        analyze("SELECT JSON(json_column FORMAT JSON) FROM (VALUES '-1', 'ala') t(json_column)");
+        analyze("SELECT JSON(json_column FORMAT JSON ENCODING UTF16) FROM (VALUES X'5B5D', X'7B7D') t(json_column)");
+
+        assertFails("SELECT JSON(1)")
+                .hasErrorCode(TYPE_MISMATCH)
+                .hasMessage("line 1:13: Cannot read input of type integer as JSON using formatting JSON");
+    }
+
+    @Test
+    public void testJsonSerializeOutputTypeAndFormat()
+    {
+        analyze("SELECT JSON_SERIALIZE(json_column) FROM (VALUES '-1', 'ala') t(json_column)");
+
+        analyze("SELECT JSON_SERIALIZE(json_column RETURNING char(5)) FROM (VALUES '-1', 'ala') t(json_column)");
+
+        analyze("SELECT JSON_SERIALIZE(json_column RETURNING varbinary FORMAT JSON ENCODING UTF16) FROM (VALUES '-1', 'ala') t(json_column)");
+
+        analyze("SELECT JSON_SERIALIZE(json_column FORMAT JSON ENCODING UTF8 RETURNING varbinary FORMAT JSON ENCODING UTF32) FROM (VALUES X'5B5D', X'7B7D') t(json_column)");
+
+        assertFails("SELECT JSON_SERIALIZE(json_column RETURNING some_type(10)) FROM (VALUES '-1', 'ala') t(json_column)")
+                .hasErrorCode(TYPE_MISMATCH)
+                .hasMessage("line 1:8: Unknown type: some_type(10)");
+
+        assertFails("SELECT JSON_SERIALIZE(json_column RETURNING double) FROM (VALUES '-1', 'ala') t(json_column)")
+                .hasErrorCode(TYPE_MISMATCH)
+                .hasMessage("line 1:8: Invalid return type of function JSON_SERIALIZE: double");
+
+        assertFails("SELECT JSON_SERIALIZE(json_column RETURNING json) FROM (VALUES '-1', 'ala') t(json_column)")
+                .hasErrorCode(TYPE_MISMATCH)
+                .hasMessage("line 1:8: Invalid return type of function JSON_SERIALIZE: json");
+    }
+
+    @Test
     public void testJsonQueryQuotesBehavior()
     {
         analyze("SELECT JSON_QUERY( " +
@@ -6907,9 +6894,9 @@ public class TestAnalyzer
 
         analyze("SELECT JSON_OBJECT('key' : '[1, 2, 3]' FORMAT JSON WITHOUT UNIQUE KEYS)");
 
-        assertFails("SELECT JSON_OBJECT('key' : '[1, 2, 3]' FORMAT JSON WITH UNIQUE KEYS)")
-                .hasErrorCode(NOT_SUPPORTED)
-                .hasMessage("line 1:8: WITH UNIQUE KEYS behavior is not supported for JSON_OBJECT function when input expression has FORMAT");
+        // WITH UNIQUE KEYS is now allowed alongside FORMAT JSON; uniqueness is enforced
+        // recursively at runtime by JSON_OBJECT
+        analyze("SELECT JSON_OBJECT('key' : '[1, 2, 3]' FORMAT JSON WITH UNIQUE KEYS)");
     }
 
     @Test
@@ -8653,7 +8640,7 @@ public class TestAnalyzer
                 Optional.of("comment"),
                 Optional.of(Identity.ofUser("user")),
                 ImmutableList.of());
-        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(TPCH_CATALOG, "s1", "v1"), viewData1, ImmutableMap.of(), false));
+        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(TPCH_CATALOG, "s1", "v1"), viewData1, ImmutableMap.of(), FAIL));
 
         // stale view (different column type)
         ViewDefinition viewData2 = new ViewDefinition(
@@ -8664,7 +8651,7 @@ public class TestAnalyzer
                 Optional.of("comment"),
                 Optional.of(Identity.ofUser("user")),
                 ImmutableList.of());
-        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(TPCH_CATALOG, "s1", "v2"), viewData2, ImmutableMap.of(), false));
+        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(TPCH_CATALOG, "s1", "v2"), viewData2, ImmutableMap.of(), FAIL));
 
         // valid view with uppercase column name
         ViewDefinition viewData4 = new ViewDefinition(
@@ -8675,7 +8662,7 @@ public class TestAnalyzer
                 Optional.of("comment"),
                 Optional.of(Identity.ofUser("user")),
                 ImmutableList.of());
-        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName("tpch", "s1", "v4"), viewData4, ImmutableMap.of(), false));
+        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName("tpch", "s1", "v4"), viewData4, ImmutableMap.of(), FAIL));
 
         // recursive view referencing to itself
         ViewDefinition viewData5 = new ViewDefinition(
@@ -8686,7 +8673,7 @@ public class TestAnalyzer
                 Optional.of("comment"),
                 Optional.of(Identity.ofUser("user")),
                 ImmutableList.of());
-        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(TPCH_CATALOG, "s1", "v5"), viewData5, ImmutableMap.of(), false));
+        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(TPCH_CATALOG, "s1", "v5"), viewData5, ImmutableMap.of(), FAIL));
 
         // type analysis for INSERT
         SchemaTableName table8 = new SchemaTableName("s1", "t8");
@@ -8796,7 +8783,7 @@ public class TestAnalyzer
                 tableViewAndMaterializedView,
                 viewDefinition,
                 ImmutableMap.of(),
-                false));
+                FAIL));
         inSetupTransaction(session -> metadata.createTable(
                 session,
                 CATALOG_FOR_IDENTIFIER_CHAIN_TESTS,
@@ -8811,7 +8798,7 @@ public class TestAnalyzer
                 tableAndView,
                 viewDefinition,
                 ImmutableMap.of(),
-                false));
+                FAIL));
         inSetupTransaction(session -> metadata.createTable(
                 session,
                 CATALOG_FOR_IDENTIFIER_CHAIN_TESTS,

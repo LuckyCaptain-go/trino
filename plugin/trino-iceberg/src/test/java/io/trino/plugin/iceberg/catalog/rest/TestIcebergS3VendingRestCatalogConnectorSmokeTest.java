@@ -38,7 +38,7 @@ import org.apache.iceberg.aws.s3.S3FileIO;
 import org.apache.iceberg.aws.s3.S3FileIOProperties;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.jdbc.JdbcCatalog;
-import org.apache.iceberg.rest.QuotedETagRestCatalogServlet;
+import org.apache.iceberg.rest.RESTCatalogServlet;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.services.sts.StsClient;
@@ -91,6 +91,7 @@ public class TestIcebergS3VendingRestCatalogConnectorSmokeTest
         floci = closeAfterClass(new Floci());
         floci.start();
         floci.createBucket(bucketName);
+        floci.createRole("test");
 
         this.warehouseLocation = "s3://%s/default/".formatted(bucketName);
 
@@ -112,7 +113,7 @@ public class TestIcebergS3VendingRestCatalogConnectorSmokeTest
             }
         };
 
-        QuotedETagRestCatalogServlet servlet = new QuotedETagRestCatalogServlet(adapter);
+        RESTCatalogServlet servlet = new RESTCatalogServlet(adapter);
 
         NodeInfo nodeInfo = new NodeInfo("test");
         HttpServerConfig config = new HttpServerConfig()

@@ -21,6 +21,7 @@ import io.airlift.bytecode.FieldDefinition;
 import io.airlift.bytecode.MethodDefinition;
 import io.airlift.bytecode.Parameter;
 import io.airlift.slice.Slice;
+import io.trino.json.JsonItems;
 import io.trino.metadata.InternalFunctionBundle;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.metadata.SqlScalarFunction;
@@ -56,6 +57,7 @@ import io.trino.spi.type.TypeDescriptor;
 import io.trino.spi.type.TypeOperators;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Case;
 import io.trino.sql.ir.Coalesce;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
@@ -65,6 +67,7 @@ import io.trino.sql.ir.Lambda;
 import io.trino.sql.ir.Logical;
 import io.trino.sql.ir.Reference;
 import io.trino.sql.ir.Row;
+import io.trino.sql.ir.WhenClause;
 import io.trino.sql.planner.Symbol;
 import io.trino.transaction.TransactionManager;
 import org.junit.jupiter.api.Test;
@@ -87,6 +90,7 @@ import static io.airlift.bytecode.ClassGenerator.classGenerator;
 import static io.airlift.bytecode.Parameter.arg;
 import static io.airlift.bytecode.ParameterizedType.type;
 import static io.airlift.slice.Slices.allocate;
+import static io.airlift.slice.Slices.utf8Slice;
 import static io.trino.block.BlockAssertions.createLongsBlock;
 import static io.trino.block.BlockAssertions.createRepeatedValuesBlock;
 import static io.trino.block.BlockAssertions.createStringsBlock;
@@ -101,6 +105,7 @@ import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.analyzer.TypeDescriptorProvider.fromTypes;
 import static io.trino.sql.gen.RowConstructorCodeGenerator.MEGAMORPHIC_FIELD_COUNT;
 import static io.trino.sql.ir.ComparisonOperator.GREATER_THAN;
+import static io.trino.sql.ir.ComparisonOperator.LESS_THAN;
 import static io.trino.sql.ir.IrExpressions.call;
 import static io.trino.sql.ir.TestingIr.comparison;
 import static io.trino.sql.planner.TestingPlannerContext.plannerContextBuilder;
@@ -108,6 +113,7 @@ import static io.trino.testing.TestingConnectorSession.SESSION;
 import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy;
 import static io.trino.transaction.InMemoryTransactionManager.createTestTransactionManager;
 import static io.trino.type.CharVarcharCoercion.SQL_STANDARD;
+import static io.trino.type.JsonType.JSON;
 import static io.trino.util.CompilerUtils.makeClassName;
 import static io.trino.util.Reflection.constructorMethodHandle;
 import static io.trino.util.Reflection.field;
@@ -536,6 +542,50 @@ public class TestPageFunctionCompiler
     }
 
     @Test
+    public void testJsonProjectionCache()
+    {
+        PageFunctionCompiler compiler = FUNCTION_RESOLUTION.getPageFunctionCompiler(100);
+        Reference input = new Reference(JSON, "c");
+        Map<Symbol, Integer> layout = ImmutableMap.of(new Symbol(JSON, "c"), 0);
+        PageProjection first = compiler.compileProjection(
+                new Coalesce(input, new Constant(JSON, JsonItems.fromText(utf8Slice("1")))),
+                layout,
+                SQL_STANDARD,
+                Optional.empty()).get();
+        PageProjection second = compiler.compileProjection(
+                new Coalesce(input, new Constant(JSON, JsonItems.fromText(utf8Slice("1.0")))),
+                layout,
+                SQL_STANDARD,
+                Optional.empty()).get();
+        SourcePage page = SourcePage.create(new Page(JSON.createBlockBuilder(null, 1).appendNull().build()));
+        Block firstResult = first.project(SESSION, first.getInputChannels().getInputChannels(page), SelectedPositions.positionsRange(0, 1));
+        Block secondResult = second.project(SESSION, second.getInputChannels().getInputChannels(page), SelectedPositions.positionsRange(0, 1));
+        assertThat(JSON.getObjectValue(firstResult, 0)).isEqualTo("1");
+        assertThat(JSON.getObjectValue(secondResult, 0)).isEqualTo("1.0");
+        assertThat(compiler.getProjectionCache().getLoadCount()).isEqualTo(2);
+        assertThat(compiler.getProjectionTemplateCache().size()).isEqualTo(1);
+        assertThat(compiler.getProjectionTemplateCache().getHitRate()).isEqualTo(0.5);
+    }
+
+    @Test
+    public void testJsonTemplateAliasedLiterals()
+    {
+        PageFunctionCompiler compiler = FUNCTION_RESOLUTION.getPageFunctionCompiler(100);
+        Reference input = new Reference(JSON, "c");
+        Map<Symbol, Integer> layout = ImmutableMap.of(new Symbol(JSON, "c"), 0);
+        RowType rowType = RowType.anonymous(ImmutableList.of(JSON, JSON));
+        Constant one = new Constant(JSON, JsonItems.fromText(utf8Slice("1")));
+        Expression aliased = new Row(ImmutableList.of(new Coalesce(input, one), one), rowType);
+        Expression distinct = new Row(ImmutableList.of(new Coalesce(input, one), new Constant(JSON, JsonItems.fromText(utf8Slice("1.0")))), rowType);
+        Page page = new Page(JSON.createBlockBuilder(null, 1).appendNull().build());
+
+        Block first = project(compiler.compileProjection(aliased, layout, SQL_STANDARD, Optional.empty()).get(), page, SelectedPositions.positionsRange(0, 1));
+        Block second = project(compiler.compileProjection(distinct, layout, SQL_STANDARD, Optional.empty()).get(), page, SelectedPositions.positionsRange(0, 1));
+        assertThat(rowType.getObjectValue(first, 0)).isEqualTo(ImmutableList.of("1", "1"));
+        assertThat(rowType.getObjectValue(second, 0)).isEqualTo(ImmutableList.of("1", "1.0"));
+    }
+
+    @Test
     public void testProjectionCache()
     {
         PageFunctionCompiler cacheCompiler = FUNCTION_RESOLUTION.getPageFunctionCompiler(100);
@@ -740,6 +790,39 @@ public class TestPageFunctionCompiler
         TestingSourcePage someRejected = new TestingSourcePage(3, createLongsBlock(101L, 2L, 103L), createLongsBlock(1L, 2L, 3L));
         assertThat(compiled.filter(SESSION, compiled.getInputChannels().getInputChannels(someRejected)).size()).isEqualTo(2);
         assertThat(someRejected.wasLoaded(1)).isTrue();
+    }
+
+    @Test
+    public void testCaseProjectionSkipsChannelLoad()
+    {
+        Expression projection = new Case(
+                ImmutableList.of(
+                        new WhenClause(
+                                comparison(GREATER_THAN, new Reference(BIGINT, "$col_0"), new Constant(BIGINT, 100L)),
+                                new Reference(BIGINT, "$col_1")),
+                        new WhenClause(
+                                comparison(LESS_THAN, new Reference(BIGINT, "$col_0"), new Constant(BIGINT, 0L)),
+                                new Reference(BIGINT, "$col_1"))),
+                new Constant(BIGINT, null));
+        Map<Symbol, Integer> layout = ImmutableMap.of(
+                new Symbol(BIGINT, "$col_0"), 0,
+                new Symbol(BIGINT, "$col_1"), 1);
+        PageProjection compiled = FUNCTION_RESOLUTION.getPageFunctionCompiler()
+                .compileProjection(projection, layout, SQL_STANDARD, Optional.empty())
+                .get();
+
+        TestingSourcePage noneTaken = new TestingSourcePage(3, createLongsBlock(1L, 2L, 3L), createLongsBlock(200L, 201L, 202L));
+        Block result = compiled.project(SESSION, compiled.getInputChannels().getInputChannels(noneTaken), SelectedPositions.positionsRange(0, 3));
+        assertThat(result.isNull(0)).isTrue();
+        assertThat(noneTaken.wasLoaded(0)).isTrue();
+        assertThat(noneTaken.wasLoaded(1)).isFalse();
+
+        TestingSourcePage someTaken = new TestingSourcePage(3, createLongsBlock(-1L, 200L, 3L), createLongsBlock(200L, 201L, 202L));
+        result = compiled.project(SESSION, compiled.getInputChannels().getInputChannels(someTaken), SelectedPositions.positionsRange(0, 3));
+        assertThat(BIGINT.getLong(result, 0)).isEqualTo(200L);
+        assertThat(BIGINT.getLong(result, 1)).isEqualTo(201L);
+        assertThat(result.isNull(2)).isTrue();
+        assertThat(someTaken.wasLoaded(1)).isTrue();
     }
 
     private static Page createLongBlockPage(long... values)

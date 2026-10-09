@@ -18,7 +18,9 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.util.List;
+import java.util.Random;
 
 import static io.trino.spi.type.DecimalConversions.MAX_EXACT_DOUBLE;
 import static io.trino.spi.type.DecimalConversions.MAX_EXACT_FLOAT;
@@ -65,6 +67,74 @@ class TestDecimalConversions
     }
 
     @Test
+    void testShortDecimalToDoubleRounding()
+    {
+        // Converting the unscaled value to double before dividing would round twice.
+        assertThat(shortDecimalToDouble(646475746153804877L, 10)).isEqualTo(6.464757461538049e16);
+        assertThat(shortDecimalToDouble(-646475746153804877L, 10)).isEqualTo(-6.464757461538049e16);
+
+        Random random = new Random(17);
+        long shortDecimalBound = BigInteger.TEN.pow(MAX_SHORT_PRECISION).longValueExact();
+        for (int scale = 0; scale <= MAX_SHORT_PRECISION; scale++) {
+            long tenToScale = BigInteger.TEN.pow(scale).longValueExact();
+            for (int i = 0; i < 1000; i++) {
+                long unscaled = random.nextLong() % shortDecimalBound;
+                double expected = BigDecimal.valueOf(unscaled).divide(BigDecimal.valueOf(tenToScale)).doubleValue();
+                assertThat(shortDecimalToDouble(unscaled, tenToScale))
+                        .as("shortDecimalToDouble(%s, scale=%d)", unscaled, scale)
+                        .isEqualTo(expected);
+            }
+        }
+    }
+
+    @Test
+    void testShortDecimalToDoubleWithOtherDivisors()
+    {
+        for (long divisor : new long[] {2, 5, 16, 20, 25, 40, 125, 256}) {
+            for (long unscaled : new long[] {646475746153804877L, -646475746153804877L}) {
+                assertThat(shortDecimalToDouble(unscaled, divisor))
+                        .as("shortDecimalToDouble(%s, divisor=%d)", unscaled, divisor)
+                        .isEqualTo(BigDecimal.valueOf(unscaled).divide(BigDecimal.valueOf(divisor)).doubleValue());
+            }
+        }
+    }
+
+    @Test
+    void testShortDecimalNearMidpoints()
+    {
+        Random random = new Random(42);
+        for (int scale = 0; scale <= MAX_SHORT_PRECISION; scale++) {
+            for (int i = 0; i < 200; i++) {
+                double quotient = Math.scalb(1 + random.nextDouble(), random.nextInt(60)) / Math.pow(10, scale);
+                float floatQuotient = (float) quotient;
+                assertShortDecimalConversionsAround(new BigDecimal(quotient).add(new BigDecimal(Math.ulp(quotient) / 2)), scale);
+                assertShortDecimalConversionsAround(new BigDecimal(floatQuotient).add(new BigDecimal(Math.ulp(floatQuotient) / 2)), scale);
+            }
+        }
+    }
+
+    private static void assertShortDecimalConversionsAround(BigDecimal value, int scale)
+    {
+        long tenToScale = BigInteger.TEN.pow(scale).longValueExact();
+        long shortDecimalBound = BigInteger.TEN.pow(MAX_SHORT_PRECISION).longValueExact();
+        long center = value.movePointRight(scale).setScale(0, RoundingMode.HALF_EVEN).longValueExact();
+        for (long unscaled = center - 3; unscaled <= center + 3; unscaled++) {
+            if (unscaled >= shortDecimalBound) {
+                continue;
+            }
+            for (long signedUnscaled : new long[] {unscaled, -unscaled}) {
+                BigDecimal exact = BigDecimal.valueOf(signedUnscaled, scale);
+                assertThat(shortDecimalToDouble(signedUnscaled, tenToScale))
+                        .as("shortDecimalToDouble(%s, scale=%d)", signedUnscaled, scale)
+                        .isEqualTo(exact.doubleValue());
+                assertThat(Float.intBitsToFloat(toIntExact(shortDecimalToReal(signedUnscaled, tenToScale))))
+                        .as("shortDecimalToReal(%s, scale=%d)", signedUnscaled, scale)
+                        .isEqualTo(exact.floatValue());
+            }
+        }
+    }
+
+    @Test
     void testShortDecimalToReal()
     {
         BigInteger shortDecimalBound = BigInteger.TEN.pow(MAX_SHORT_PRECISION);
@@ -96,6 +166,42 @@ class TestDecimalConversions
         }
     }
 
+    @Test
+    void testLongDecimalNearMidpoints()
+    {
+        Random random = new Random(42);
+        for (int scale = 0; scale <= 38; scale++) {
+            for (int i = 0; i < 200; i++) {
+                double quotient = Math.scalb(1 + random.nextDouble(), random.nextInt(255) - 128);
+                float floatQuotient = (float) quotient;
+                assertLongDecimalConversionsAround(new BigDecimal(quotient), scale);
+                assertLongDecimalConversionsAround(new BigDecimal(quotient).add(new BigDecimal(Math.ulp(quotient) / 2)), scale);
+                assertLongDecimalConversionsAround(new BigDecimal(floatQuotient).add(new BigDecimal(Math.ulp(floatQuotient) / 2)), scale);
+            }
+        }
+    }
+
+    private static void assertLongDecimalConversionsAround(BigDecimal value, int scale)
+    {
+        BigInteger center = value.movePointRight(scale).toBigInteger();
+        for (int delta = -3; delta <= 3; delta++) {
+            BigInteger unscaled = center.add(BigInteger.valueOf(delta));
+            if (unscaled.abs().compareTo(BigInteger.TEN.pow(38)) >= 0) {
+                continue;
+            }
+            for (BigInteger signedUnscaled : List.of(unscaled, unscaled.negate())) {
+                Int128 decimal = Int128.valueOf(signedUnscaled);
+                BigDecimal exact = new BigDecimal(signedUnscaled, scale);
+                assertThat(longDecimalToDouble(decimal, scale))
+                        .as("longDecimalToDouble(%s, %d)", signedUnscaled, scale)
+                        .isEqualTo(exact.doubleValue());
+                assertThat(Float.intBitsToFloat(toIntExact(longDecimalToReal(decimal, scale))))
+                        .as("longDecimalToReal(%s, %d)", signedUnscaled, scale)
+                        .isEqualTo(exact.floatValue());
+            }
+        }
+    }
+
     private static List<BigInteger> testValues()
     {
         ImmutableList.Builder<BigInteger> values = ImmutableList.builder();
@@ -121,7 +227,7 @@ class TestDecimalConversions
         values.add(new BigInteger("391462049447"));
         values.add(new BigInteger("391462049447").negate());
 
-        // Above 2^53 near a float midpoint at scale 2, resolved through BigDecimal
+        // Above 2^53 near a float midpoint at scale 2
         values.add(new BigInteger("960000084148223999"));
         values.add(new BigInteger("960000084148223999").negate());
 

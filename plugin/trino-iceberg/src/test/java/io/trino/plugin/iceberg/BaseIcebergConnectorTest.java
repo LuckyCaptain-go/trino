@@ -1854,6 +1854,97 @@ public abstract class BaseIcebergConnectorTest
     }
 
     @Test
+    public void testOptimizeWithSameSortOrder()
+    {
+        try (TestTable table = newTrinoTable(
+                "test_optimize_with_same_sort_order",
+                "AS SELECT * FROM nation WITH NO DATA")) {
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM nation WHERE nationkey < 10", 10);
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM nation WHERE nationkey >= 10 AND nationkey < 20", 10);
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM nation WHERE nationkey >= 20", 5);
+            assertUpdate("ALTER TABLE " + table.getName() + " SET PROPERTIES sorted_by = ARRAY['comment']");
+
+            assertUpdate(withSingleWriterPerTask(getSession()), "ALTER TABLE " + table.getName() + " EXECUTE optimize (sorted_by => ARRAY['comment'])");
+
+            for (MaterializedRow row : computeActual("SELECT file_path, sort_order_id from \"" + table.getName() + "$files\"").getMaterializedRows()) {
+                assertThat(isFileSorted((String) row.getField(0), "comment")).isTrue();
+                assertThat(((Integer) row.getField(1))).isEqualTo(1);
+            }
+            assertQuery("SELECT * FROM " + table.getName(), "SELECT * FROM nation");
+        }
+    }
+
+    @Test
+    public void testOptimizeWithDifferentSortOrder()
+    {
+        try (TestTable table = newTrinoTable(
+                "test_optimize_with_different_sort_order",
+                "AS SELECT * FROM nation WITH NO DATA")) {
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM nation WHERE nationkey < 10", 10);
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM nation WHERE nationkey >= 10 AND nationkey < 20", 10);
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM nation WHERE nationkey >= 20", 5);
+            assertUpdate("ALTER TABLE " + table.getName() + " SET PROPERTIES sorted_by = ARRAY['comment']");
+
+            assertUpdate(withSingleWriterPerTask(getSession()), "ALTER TABLE " + table.getName() + " EXECUTE optimize (sorted_by => ARRAY['name'])");
+
+            for (MaterializedRow row : computeActual("SELECT file_path, sort_order_id from \"" + table.getName() + "$files\"").getMaterializedRows()) {
+                assertThat(isFileSorted((String) row.getField(0), "name")).isTrue();
+                assertThat(((Integer) row.getField(1))).isEqualTo(0);
+            }
+            assertQuery("SELECT * FROM " + table.getName(), "SELECT * FROM nation");
+        }
+    }
+
+    @Test
+    public void testOptimizeWithNewSortOrder()
+    {
+        try (TestTable table = newTrinoTable(
+                "test_optimize_with_new_sort_order",
+                "WITH (sorted_by = ARRAY['comment']) AS SELECT * FROM nation WITH NO DATA")) {
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM nation WHERE nationkey < 10", 10);
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM nation WHERE nationkey >= 10 AND nationkey < 20", 10);
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM nation WHERE nationkey >= 20", 5);
+
+            assertUpdate(withSingleWriterPerTask(getSession()), "ALTER TABLE " + table.getName() + " EXECUTE optimize (sorted_by => ARRAY['name'])");
+
+            for (MaterializedRow row : computeActual("SELECT file_path, sort_order_id from \"" + table.getName() + "$files\"").getMaterializedRows()) {
+                assertThat(isFileSorted((String) row.getField(0), "name")).isTrue();
+                assertThat(((Integer) row.getField(1))).isEqualTo(0);
+            }
+            assertQuery("SELECT * FROM " + table.getName(), "SELECT * FROM nation");
+        }
+    }
+
+    @Test
+    public void testOptimizeWithEmptySortOrder()
+    {
+        try (TestTable table = newTrinoTable(
+                "test_optimize_with_empty_sort_order",
+                "WITH (sorted_by = ARRAY['comment']) AS SELECT * FROM nation WITH NO DATA")) {
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM nation WHERE nationkey >= 20", 5);
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM nation WHERE nationkey < 10", 10);
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM nation WHERE nationkey >= 10 AND nationkey < 20", 10);
+
+            assertUpdate(withSingleWriterPerTask(getSession()), "ALTER TABLE " + table.getName() + " EXECUTE optimize (sorted_by => ARRAY[])");
+
+            for (MaterializedRow row : computeActual("SELECT sort_order_id from \"" + table.getName() + "$files\"").getMaterializedRows()) {
+                assertThat(((Integer) row.getField(0))).isEqualTo(0);
+            }
+            assertQuery("SELECT * FROM " + table.getName(), "SELECT * FROM nation");
+        }
+    }
+
+    @Test
+    public void testOptimizeWithInvalidSortOrder()
+    {
+        try (TestTable table = newTrinoTable("test_optimize_with_invalid_sort_order", "AS SELECT * FROM nation WITH NO DATA")) {
+            assertThat(query("ALTER TABLE " + table.getName() + " EXECUTE optimize (sorted_by => ARRAY['no_such_column'])"))
+                    // TODO should be TrinoException
+                    .nonTrinoExceptionFailure().hasMessageContaining("Cannot find field 'no_such_column'");
+        }
+    }
+
+    @Test
     public void testUpdateWithSortOrder()
     {
         try (TestTable table = newTrinoTable(
@@ -5974,6 +6065,15 @@ public abstract class BaseIcebergConnectorTest
     }
 
     @Test
+    public void testProjectionPushdownWithBetweenSymmetric()
+    {
+        try (TestTable table = newTrinoTable("test_projection_between_symmetric", "(value integer, bounds row(low integer, high integer))")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (5, ROW(0, 10)), (5, ROW(10, 0)), (20, ROW(0, 10))", 3);
+            assertQuery("SELECT value + 1 BETWEEN SYMMETRIC bounds.low AND bounds.high FROM " + table.getName(), "VALUES true, true, false");
+        }
+    }
+
+    @Test
     public void testProjectionPushdownAfterRename()
     {
         assertUpdate("CREATE TABLE projection_pushdown_after_rename (id INT, a ROW(b INT, c ROW (d INT)))");
@@ -9649,6 +9749,28 @@ public abstract class BaseIcebergConnectorTest
         }
         finally {
             assertUpdate("DROP TABLE IF EXISTS test_bucketed_select");
+        }
+    }
+
+    @Test
+    public void testBucketedJoinOnDecimal()
+    {
+        try (TestTable table = newTrinoTable(
+                "test_bucketed_join_decimal_",
+                "WITH (partitioning = ARRAY['bucket(short_key, 13)', 'bucket(long_key, 17)']) AS " +
+                        "SELECT CAST(orderkey AS decimal(18, 0)) short_key, CAST(orderkey AS decimal(38, 0)) long_key FROM tpch.tiny.orders")) {
+            Session session = Session.builder(getSession())
+                    .setSystemProperty(JOIN_DISTRIBUTION_TYPE, "PARTITIONED")
+                    .setCatalogSessionProperty(ICEBERG_CATALOG, BUCKET_EXECUTION_ENABLED, "true")
+                    .build();
+            assertQuery(
+                    session,
+                    "SELECT count(*) FROM " + table.getName() + " JOIN (SELECT CAST(orderkey AS decimal(18, 0)) short_key FROM tpch.tiny.lineitem) USING (short_key)",
+                    "VALUES 60175");
+            assertQuery(
+                    session,
+                    "SELECT count(*) FROM " + table.getName() + " JOIN (SELECT CAST(orderkey AS decimal(38, 0)) long_key FROM tpch.tiny.lineitem) USING (long_key)",
+                    "VALUES 60175");
         }
     }
 

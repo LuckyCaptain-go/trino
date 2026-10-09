@@ -113,6 +113,11 @@
 
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
+            <artifactId>iam</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
             <artifactId>regions</artifactId>
             <optional>true</optional>
         </dependency>
@@ -120,12 +125,6 @@
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>s3</artifactId>
-            <exclusions>
-                <exclusion>
-                    <groupId>commons-logging</groupId>
-                    <artifactId>commons-logging</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <dependency>
